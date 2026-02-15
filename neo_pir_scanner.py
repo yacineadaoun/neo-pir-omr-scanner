@@ -266,8 +266,8 @@ def calculate_scores(all_responses):
 
 
 # ====================== APPLICATION STREAMLIT ======================
-st.title("NEO PI-R OMR")
-st.markdown("**OMR Scanner Smart**")
+st.title("NeoScore Pro")
+st.markdown("**OMR Smart Scanner pour l'Inventaire NEO PI-R**")
 
 debug = st.checkbox("Mode debug (logs détaillés)")
 
@@ -395,4 +395,5 @@ if uploaded_file and st.button("🚀 Traiter la feuille et calculer les scores",
     except Exception as e:
         st.error(f"Erreur : {e}")
 
-st.caption("Version développée par YACINE PSY")
+st.caption("Version d'Essai 1.0 – Développée par Yacine PSY
+© 2026 | Prototype exclusif – Usage autorisé sous licence restreinte")
