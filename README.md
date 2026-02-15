@@ -1,2 +1,6 @@
-# neo-pir-omr-scanner
-Scanner NEO PI-R OMR avec Python/Streamlit
+streamlit
+numpy
+pillow
+imutils
+scipy
+opencv-python-headless
