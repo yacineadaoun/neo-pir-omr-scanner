@@ -1,14 +1,14 @@
 import streamlit as st
 import cv2
 import numpy as np
-from imutils.perspective import four_point_transform
 import imutils
+from imutils.perspective import four_point_transform
 from PIL import Image
 import io
 import csv
 
 # =========================================================
-# PAGE CONFIG (doit être avant tout st.*)
+# CONFIG PAGE (DOIT ÊTRE AVANT TOUT st.*)
 # =========================================================
 st.set_page_config(
     page_title="NEO PI-R — OMR Clinique",
@@ -18,7 +18,7 @@ st.set_page_config(
 )
 
 # =========================================================
-# STYLE (sobre, clinique)
+# CSS (sobre / professionnel)
 # =========================================================
 st.markdown(
     """
@@ -49,27 +49,27 @@ st.markdown(
         font-size: 12px;
         padding-top: 16px;
       }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
     </style>
     """,
     unsafe_allow_html=True
 )
 
 # =========================================================
-# DONNÉES (COLLE ICI TES DICTIONNAIRES COMPLETS)
+# 1) COLLE ICI TES DICTIONNAIRES COMPLETS
 # =========================================================
 
 # ---- scoring_key COMPLET (240 items) ----
-# Colle ici ton scoring_key complet
 scoring_key = {
-    # ... COLLER TON scoring_key COMPLET ICI ...
+    # COLLE ICI TON scoring_key COMPLET
 }
 
 # ---- item_to_facette COMPLET ----
-# Colle ici ton item_to_facette complet
 item_to_facette = {
-    # ... COLLER TON item_to_facette COMPLET ICI ...
+    # COLLE ICI TON item_to_facette COMPLET
 }
 
+# ---- Mappings domaines (inchangés) ----
 facettes_to_domain = {
     'N1': 'N', 'N2': 'N', 'N3': 'N', 'N4': 'N', 'N5': 'N', 'N6': 'N',
     'E1': 'E', 'E2': 'E', 'E3': 'E', 'E4': 'E', 'E5': 'E', 'E6': 'E',
@@ -120,18 +120,18 @@ domain_labels = {
 }
 
 # =========================================================
-# MÉTHODES SCIENTIFIQUES (OMR LETTRES ENTOURÉES)
+# 2) IMAGE PIPELINE
 # =========================================================
 def preprocess_image(pil_img: Image.Image):
     """
-    1) Conversion PIL -> OpenCV
-    2) Détection contour du document + correction perspective
-    3) Gray + threshold (noir = encre)
+    - Convertit PIL -> OpenCV BGR
+    - Tente de détecter le contour du document, redresse (perspective)
+    - Produit (paper_bgr, gray, thresh_inv)
     """
-    img = pil_img.convert("RGB")
-    img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
+    img_rgb = pil_img.convert("RGB")
+    img_bgr = cv2.cvtColor(np.array(img_rgb), cv2.COLOR_RGB2BGR)
 
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edged = cv2.Canny(blurred, 75, 200)
 
@@ -139,7 +139,7 @@ def preprocess_image(pil_img: Image.Image):
     cnts = imutils.grab_contours(cnts)
     docCnt = None
 
-    if len(cnts) > 0:
+    if cnts:
         cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
         for c in cnts:
             peri = cv2.arcLength(c, True)
@@ -148,15 +148,14 @@ def preprocess_image(pil_img: Image.Image):
                 docCnt = approx
                 break
 
-    # fallback: si contour non détecté, on tente quand même (moins fiable)
     if docCnt is None:
-        paper = img.copy()
-        warped_gray = gray.copy()
+        paper = img_bgr.copy()
+        warped_gray = cv2.cvtColor(paper, cv2.COLOR_BGR2GRAY)
     else:
-        paper = four_point_transform(img, docCnt.reshape(4, 2))
+        paper = four_point_transform(img_bgr, docCnt.reshape(4, 2))
         warped_gray = four_point_transform(gray, docCnt.reshape(4, 2))
 
-    # threshold binaire inversé : pixels "encre" => 255
+    # Binarisation: pixels "encre" -> 255
     thresh = cv2.adaptiveThreshold(
         warped_gray, 255,
         cv2.ADAPTIVE_THRESH_MEAN_C,
@@ -166,36 +165,45 @@ def preprocess_image(pil_img: Image.Image):
     return paper, warped_gray, thresh
 
 
+def normalize_width(gray, thresh, target_w=1700):
+    H, W = gray.shape[:2]
+    if W == 0:
+        raise ValueError("Image invalide (largeur=0).")
+    scale = target_w / float(W)
+    new_size = (target_w, max(1, int(H * scale)))
+    gray2 = cv2.resize(gray, new_size)
+    thr2 = cv2.resize(thresh, new_size)
+    return gray2, thr2
+
+
+# =========================================================
+# 3) OMR "LETTRES ENTOURÉES" (pas de bulles)
+# =========================================================
 def read_answers_letters(
-    warped_gray,
     thresh,
     grid_left=0.05, grid_right=0.95,
     grid_top=0.205, grid_bottom=0.86,
     rows=30, cols=8,
-    option_centers=(0.12, 0.32, 0.52, 0.72, 0.90),
+    option_centers=(0.12, 0.32, 0.52, 0.72, 0.90),  # FD D N A FA
     box_w_ratio=0.16, box_h_ratio=0.60,
     min_mark_threshold=1200,
-    ambiguity_gap=0.12,     # % gap relatif entre top1 et top2
-    impute_blank_to_N=True
+    ambiguity_gap=0.12,
+    impute_blank_to_N=True,
+    draw_debug=False
 ):
     """
-    Lecture OMR sur FEUILLE SANS BULLES (lettres entourées).
-    On mesure l'encrage dans 5 zones (FD,D,N,A,FA) par item.
-
-    - min_mark_threshold : seuil minimal d'encrage pour déclarer "marqué"
-    - ambiguity_gap : si (top1 - top2)/top1 < ambiguity_gap => ambiguïté
+    Mesure l'encrage dans 5 ROIs par item.
+    - item_id = (ligne+1) + 30*colonne  (numérotation verticale par colonne)
+    - si "vide" (encrage < seuil), imputation optionnelle à N (index 2)
     """
-    # Normalisation dimension pour stabilité
-    H, W = warped_gray.shape[:2]
-    target_w = 1700
-    scale = target_w / float(W)
-    warped_gray = cv2.resize(warped_gray, (target_w, int(H * scale)))
-    thresh = cv2.resize(thresh, (target_w, int(H * scale)))
-    H, W = warped_gray.shape[:2]
+    H, W = thresh.shape[:2]
 
-    # Zone grille
+    # zone de grille
     x0 = int(grid_left * W);  x1 = int(grid_right * W)
     y0 = int(grid_top * H);   y1 = int(grid_bottom * H)
+
+    x0 = max(0, min(W - 2, x0)); x1 = max(x0 + 1, min(W - 1, x1))
+    y0 = max(0, min(H - 2, y0)); y1 = max(y0 + 1, min(H - 1, y1))
 
     grid_w = x1 - x0
     grid_h = y1 - y0
@@ -206,18 +214,17 @@ def read_answers_letters(
     warnings = []
 
     blank_count = 0
-    neutral_marked_count = 0
-    neutral_imputed_count = 0
-    low_mark_count = 0
-    ambiguity_count = 0
+    neutral_marked = 0
+    neutral_imputed = 0
+    low_mark = 0
+    ambiguous = 0
 
-    best_inks = []
+    debug_canvas = cv2.cvtColor(thresh.copy(), cv2.COLOR_GRAY2BGR) if draw_debug else None
 
     for r in range(rows):
         for c in range(cols):
-            item_id = (r + 1) + 30 * c  # numérotation verticale par colonne
+            item_id = (r + 1) + 30 * c
 
-            # cellule item
             cx0 = int(x0 + c * cell_w)
             cy0 = int(y0 + r * cell_h)
             cw = int(cell_w)
@@ -227,7 +234,7 @@ def read_answers_letters(
             bh = max(8, int(ch * box_h_ratio))
             by = int(cy0 + (ch - bh) * 0.50)
 
-            ink_values = []
+            inks = []
             rois = []
 
             for oc in option_centers:
@@ -237,74 +244,102 @@ def read_answers_letters(
 
                 roi = thresh[by2:by2 + bh, bx:bx + bw]
                 ink = int(cv2.countNonZero(roi))
-                ink_values.append(ink)
+                inks.append(ink)
                 rois.append((bx, by2, bw, bh))
 
-            best_idx = int(np.argmax(ink_values))
-            best_ink = int(ink_values[best_idx])
-            best_inks.append(best_ink)
+            best_idx = int(np.argmax(inks))
+            best_ink = int(inks[best_idx])
 
-            # Ambiguïté
-            sorted_inks = sorted(ink_values, reverse=True)
+            sorted_inks = sorted(inks, reverse=True)
             if sorted_inks[0] > 0:
                 rel_gap = (sorted_inks[0] - sorted_inks[1]) / float(sorted_inks[0])
             else:
                 rel_gap = 1.0
 
-            # Décision marqué vs vide
+            # item vide ?
             if best_ink < min_mark_threshold:
                 blank_count += 1
                 if impute_blank_to_N:
-                    responses[item_id] = 2  # N index 2
-                    neutral_imputed_count += 1
+                    responses[item_id] = 2
+                    neutral_imputed += 1
                     warnings.append(f"Item {item_id}: non répondu → imputé à N (2 points)")
                 else:
                     responses[item_id] = best_idx
-                    warnings.append(f"Item {item_id}: non répondu")
+                    warnings.append(f"Item {item_id}: non répondu (non imputé)")
             else:
                 responses[item_id] = best_idx
                 if best_idx == 2:
-                    neutral_marked_count += 1
+                    neutral_marked += 1
 
-                # marquage faible (scientifique: encrage proche du seuil)
                 if best_ink < int(min_mark_threshold * 1.35):
-                    low_mark_count += 1
+                    low_mark += 1
                     warnings.append(f"Item {item_id}: marquage faible (ink={best_ink})")
 
                 if rel_gap < ambiguity_gap:
-                    ambiguity_count += 1
+                    ambiguous += 1
                     warnings.append(f"Item {item_id}: ambiguïté (top1={sorted_inks[0]}, top2={sorted_inks[1]})")
+
+            # debug draw
+            if draw_debug and debug_canvas is not None:
+                for j, (bx, by2, bw, bh) in enumerate(rois):
+                    color = (0, 255, 0) if j == responses[item_id] else (200, 200, 200)
+                    cv2.rectangle(debug_canvas, (bx, by2), (bx + bw, by2 + bh), color, 1)
 
     stats = {
         "total_items": rows * cols,
         "blank_count": blank_count,
-        "neutral_marked_count": neutral_marked_count,
-        "neutral_imputed_count": neutral_imputed_count,
-        "neutral_total_count": neutral_marked_count + neutral_imputed_count,
-        "low_mark_count": low_mark_count,
-        "ambiguity_count": ambiguity_count,
-        "best_ink_median": int(np.median(best_inks)) if best_inks else 0,
-        "best_ink_p10": int(np.percentile(best_inks, 10)) if best_inks else 0,
-        "best_ink_p90": int(np.percentile(best_inks, 90)) if best_inks else 0,
+        "neutral_marked_count": neutral_marked,
+        "neutral_imputed_count": neutral_imputed,
+        "neutral_total_count": neutral_marked + neutral_imputed,
+        "low_mark_count": low_mark,
+        "ambiguity_count": ambiguous,
     }
 
-    return responses, warnings, stats
+    return responses, warnings, stats, debug_canvas
 
 
-def calculate_scores(all_responses):
+# =========================================================
+# 4) SCORING + INDICES CLINIQUES
+# =========================================================
+def calculate_scores(responses):
     facette_scores = {fac: 0 for fac in facette_labels}
-    for item_id, option_idx in all_responses.items():
+    for item_id, option_idx in responses.items():
         if item_id in scoring_key and item_id in item_to_facette:
-            score = scoring_key[item_id][option_idx]
             fac = item_to_facette[item_id]
-            facette_scores[fac] += score
+            facette_scores[fac] += scoring_key[item_id][option_idx]
 
     domain_scores = {dom: 0 for dom in domain_labels}
-    for fac, score in facette_scores.items():
-        dom = facettes_to_domain[fac]
-        domain_scores[dom] += score
+    for fac, sc in facette_scores.items():
+        dom = facettes_to_domain.get(fac)
+        if dom:
+            domain_scores[dom] += sc
 
     return facette_scores, domain_scores
+
+
+def response_style_indices(responses):
+    """
+    Indices utiles (non diagnostiques à eux seuls) :
+    - extrêmes: FD/FA
+    - acquiescence: A/FA
+    - neutralité: N
+    - distribution brute des options
+    """
+    counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
+    for _, idx in responses.items():
+        if idx in counts:
+            counts[idx] += 1
+
+    total = sum(counts.values()) if sum(counts.values()) else 1
+    pct = {k: 100 * v / total for k, v in counts.items()}
+
+    indices = {
+        "FD": counts[0], "D": counts[1], "N": counts[2], "A": counts[3], "FA": counts[4],
+        "FD%": pct[0], "D%": pct[1], "N%": pct[2], "A%": pct[3], "FA%": pct[4],
+        "Extrêmes (FD+FA)": counts[0] + counts[4],
+        "Acquiescence (A+FA)": counts[3] + counts[4],
+    }
+    return indices
 
 
 def protocol_validity(stats, blank_invalid_threshold=15, neutral_invalid_threshold=42):
@@ -312,95 +347,89 @@ def protocol_validity(stats, blank_invalid_threshold=15, neutral_invalid_thresho
     if stats["blank_count"] >= blank_invalid_threshold:
         reasons.append(f"Items non répondus: {stats['blank_count']} (seuil ≥ {blank_invalid_threshold}).")
     if stats["neutral_total_count"] >= neutral_invalid_threshold:
-        reasons.append(f"Réponses Neutres (N) totales: {stats['neutral_total_count']} (seuil ≥ {neutral_invalid_threshold}).")
+        reasons.append(f"Réponses N totales: {stats['neutral_total_count']} (seuil ≥ {neutral_invalid_threshold}).")
     return (len(reasons) == 0), reasons
 
 
 # =========================================================
-# UI — CLINIQUE
+# UI
 # =========================================================
-title_col, meta_col = st.columns([0.75, 0.25], vertical_alignment="bottom")
-with title_col:
-    st.title("NEO PI-R — Analyse OMR (Feuille de réponses)")
-    st.caption("Lecture scientifique des lettres entourées FD / D / N / A / FA — 240 items (8 colonnes × 30 lignes).")
-with meta_col:
+left, right = st.columns([0.78, 0.22], vertical_alignment="bottom")
+with left:
+    st.title("NEO PI-R — OMR Clinique (feuille de réponses)")
+    st.caption("Lecture des réponses par encrage sur les lettres FD / D / N / A / FA (240 items).")
+with right:
     st.write("")
 
 with st.sidebar:
-    st.markdown("## Acquisition (qualité)")
-    st.caption("Recommandé : scan ou photo verticale, feuille à plat, lumière homogène, sans ombres.")
+    st.markdown("## Paramètres")
+    debug_draw = st.toggle("Afficher overlay de lecture", value=False)
+    impute_blank_to_N = st.toggle("Imputer item vide à N (2 points)", value=True)
 
     st.markdown("---")
-    st.markdown("## Paramètres de lecture")
-    impute_blank_to_N = st.toggle("Imputer les items vides à N (2 points)", value=True)
-
-    st.markdown("### Validité protocole")
+    st.markdown("### Validité protocolaire (paramétrable)")
     blank_invalid_threshold = st.number_input("Items vides (invalide si ≥)", 0, 240, 15, 1)
     neutral_invalid_threshold = st.number_input("N total (invalide si ≥)", 0, 240, 42, 1)
 
-    st.markdown("### Zone de grille (à calibrer si nécessaire)")
-    grid_left = st.slider("Grille — gauche", 0.00, 0.20, 0.05, 0.005)
-    grid_right = st.slider("Grille — droite", 0.80, 1.00, 0.95, 0.005)
-    grid_top = st.slider("Grille — haut", 0.10, 0.35, 0.205, 0.005)
-    grid_bottom = st.slider("Grille — bas", 0.70, 0.95, 0.86, 0.005)
-
-    st.markdown("### Seuils OMR (encrage)")
-    min_mark_threshold = st.slider("Seuil marquage (ink)", 200, 4000, 1200, 50)
-    ambiguity_gap = st.slider("Seuil ambiguïté (gap relatif)", 0.02, 0.40, 0.12, 0.01)
+    st.markdown("---")
+    st.markdown("### Zone de la grille (calibration)")
+    grid_left = st.slider("Gauche", 0.00, 0.20, 0.05, 0.005)
+    grid_right = st.slider("Droite", 0.80, 1.00, 0.95, 0.005)
+    grid_top = st.slider("Haut", 0.10, 0.35, 0.205, 0.005)
+    grid_bottom = st.slider("Bas", 0.70, 0.95, 0.86, 0.005)
 
     st.markdown("---")
-    st.markdown("## À propos")
-    st.caption("NEO PI-R OMR — v1.0 (Clinique)")
-    st.caption("© 2026 Yacine Adaoun — Tous droits réservés")
+    st.markdown("### Seuils OMR")
+    min_mark_threshold = st.slider("Seuil encrage (ink)", 200, 4000, 1200, 50)
+    ambiguity_gap = st.slider("Ambiguïté (gap relatif)", 0.02, 0.40, 0.12, 0.01)
+
+    st.markdown("---")
+    st.caption("Référence documentaire : manuel fourni (scan).")
+    st.caption("Usage professionnel sous responsabilité du psychologue.")
 
 st.markdown("### Import")
 c1, c2 = st.columns([0.65, 0.35], vertical_alignment="top")
-
 with c1:
-    uploaded_file = st.file_uploader("Charger une feuille (JPG/PNG)", type=["jpg", "jpeg", "png"], accept_multiple_files=False)
-
+    uploaded_file = st.file_uploader("Charger la feuille (JPG/PNG)", type=["jpg", "jpeg", "png"])
+    st.caption("Conseil: photo nette, feuille à plat, lumière homogène, sans ombres.")
 with c2:
     st.markdown("<div class='card'>", unsafe_allow_html=True)
     st.markdown("**Contrôles**")
     run = st.button("Analyser", type="primary", disabled=(uploaded_file is None))
-    st.caption("Détecte la feuille, redresse, lit les réponses, calcule les scores et la validité.")
+    st.caption("Redressement → lecture OMR → scores → validité → exports.")
     st.markdown("</div>", unsafe_allow_html=True)
 
-# =========================================================
-# RUN
-# =========================================================
 if uploaded_file and run:
     try:
         pil_img = Image.open(uploaded_file)
-        paper, warped_gray, thresh = preprocess_image(pil_img)
 
-        # Lecture des réponses (lettres)
-        responses, warnings, stats = read_answers_letters(
-            warped_gray,
-            thresh,
+        paper, gray, thresh = preprocess_image(pil_img)
+        gray_n, thr_n = normalize_width(gray, thresh, target_w=1700)
+
+        responses, warnings, stats, overlay = read_answers_letters(
+            thr_n,
             grid_left=grid_left, grid_right=grid_right,
             grid_top=grid_top, grid_bottom=grid_bottom,
             min_mark_threshold=min_mark_threshold,
             ambiguity_gap=ambiguity_gap,
-            impute_blank_to_N=impute_blank_to_N
+            impute_blank_to_N=impute_blank_to_N,
+            draw_debug=debug_draw
         )
 
-        # Scores
         facette_scores, domain_scores = calculate_scores(responses)
+        style = response_style_indices(responses)
 
-        # Validité
         is_valid, reasons = protocol_validity(
             stats,
             blank_invalid_threshold=int(blank_invalid_threshold),
             neutral_invalid_threshold=int(neutral_invalid_threshold)
         )
 
-        # Indicateurs “scientifiques”
-        total_items = stats["total_items"]
-        response_rate = 100 * (1 - stats["blank_count"] / max(1, total_items))
+        total = stats["total_items"]
+        response_rate = 100 * (1 - stats["blank_count"] / max(1, total))
 
-        # “Confidence” = pénalise ambiguïté + marquage faible
-        penalty = (stats["ambiguity_count"] * 1.0 + stats["low_mark_count"] * 0.5) / max(1, total_items)
+        # Qualité lecture = pénalise ambiguïtés + faibles (proxy)
+        penalty = (stats["ambiguity_count"] * 1.0 + stats["low_mark_count"] * 0.5) / max(1, total)
         confidence = max(0.0, 100 * (1 - penalty))
 
         st.markdown("### Synthèse")
@@ -408,12 +437,12 @@ if uploaded_file and run:
 
         k1.markdown(
             f"<div class='card'><div class='label'>Validité</div><div class='value'>{'Valide' if is_valid else 'Invalide'}</div>"
-            f"<div class='sub'>Règles: vides ≥ {blank_invalid_threshold} ; N ≥ {neutral_invalid_threshold}</div></div>",
+            f"<div class='sub'>Seuils: vides ≥ {blank_invalid_threshold} ; N ≥ {neutral_invalid_threshold}</div></div>",
             unsafe_allow_html=True
         )
         k2.markdown(
             f"<div class='card'><div class='label'>Taux de réponse</div><div class='value'>{response_rate:.1f}%</div>"
-            f"<div class='sub'>Vides: {stats['blank_count']} / {total_items}</div></div>",
+            f"<div class='sub'>Vides: {stats['blank_count']} / {total}</div></div>",
             unsafe_allow_html=True
         )
         k3.markdown(
@@ -423,7 +452,7 @@ if uploaded_file and run:
         )
         k4.markdown(
             f"<div class='card'><div class='label'>Qualité de lecture</div><div class='value'>{confidence:.1f}%</div>"
-            f"<div class='sub'>Ambiguïtés: {stats['ambiguity_count']} ; marquages faibles: {stats['low_mark_count']}</div></div>",
+            f"<div class='sub'>Ambiguïtés: {stats['ambiguity_count']} ; faibles: {stats['low_mark_count']}</div></div>",
             unsafe_allow_html=True
         )
 
@@ -435,7 +464,9 @@ if uploaded_file and run:
             for r in reasons:
                 st.warning(r)
 
-        tab1, tab2, tab3, tab4 = st.tabs(["Scores", "Qualité", "Avertissements", "Exports"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(
+            ["Scores", "Style de réponse", "Images", "Avertissements", "Exports"]
+        )
 
         with tab1:
             fac_data = []
@@ -444,49 +475,46 @@ if uploaded_file and run:
                 fac_data.append({
                     "Facette": facette_labels[fac],
                     "Items": ", ".join(items),
-                    "Score brut": facette_scores[fac]
+                    "Score brut": facette_scores.get(fac, 0)
                 })
             st.subheader("Scores par facette")
             st.dataframe(fac_data, use_container_width=True, hide_index=True)
 
-            dom_data = [{"Domaine": domain_labels[d], "Score": domain_scores[d]} for d in sorted(domain_labels)]
+            dom_data = [{"Domaine": domain_labels[d], "Score": domain_scores.get(d, 0)} for d in sorted(domain_labels)]
             st.subheader("Totaux par domaine")
             st.dataframe(dom_data, use_container_width=True, hide_index=True)
 
         with tab2:
-            st.subheader("Statistiques d’encrage (contrôle scientifique)")
-            st.write(
-                {
-                    "ink_median": stats["best_ink_median"],
-                    "ink_p10": stats["best_ink_p10"],
-                    "ink_p90": stats["best_ink_p90"],
-                    "seuil_marque": int(min_mark_threshold)
-                }
-            )
-            st.caption("Si ink_median est très bas, augmente la qualité photo/scan ou ajuste le seuil.")
+            st.subheader("Indices de style de réponse (descriptif)")
+            st.caption("Ces indices aident à repérer des profils de réponse atypiques (sans conclure à eux seuls).")
+            st.json(style)
 
+        with tab3:
             cimg1, cimg2 = st.columns(2)
             with cimg1:
                 st.subheader("Original")
                 st.image(pil_img, use_container_width=True)
             with cimg2:
-                st.subheader("Redressé / Analyse")
-                st.image(paper, channels="BGR", use_container_width=True)
+                st.subheader("Binarisé (encre=blanc)")
+                st.image(thr_n, clamp=True, use_container_width=True)
 
-        with tab3:
+            if debug_draw and overlay is not None:
+                st.subheader("Overlay de lecture (ROIs)")
+                st.image(overlay, channels="BGR", use_container_width=True)
+
+        with tab4:
             st.subheader("Journal")
             if warnings:
                 with st.expander("Afficher", expanded=True):
-                    for w in warnings[:500]:
+                    for w in warnings[:600]:
                         st.warning(w)
-                if len(warnings) > 500:
-                    st.info(f"{len(warnings)} avertissements au total. Affichage limité à 500.")
+                if len(warnings) > 600:
+                    st.info(f"{len(warnings)} avertissements au total. Affichage limité à 600.")
             else:
                 st.success("Aucun avertissement.")
 
-        with tab4:
+        with tab5:
             st.subheader("Exports")
-
             # CSV
             output = io.StringIO()
             writer = csv.DictWriter(output, fieldnames=["Facette", "Items", "Score brut"])
@@ -498,9 +526,13 @@ if uploaded_file and run:
             dom_writer.writeheader()
             dom_writer.writerows(dom_data)
 
+            output.write("\n--- STYLE DE RÉPONSE ---\n")
+            for k, v in style.items():
+                output.write(f"{k},{v}\n")
+
             st.download_button("Télécharger CSV", output.getvalue(), "neo_pir_scores.csv", "text/csv")
 
-            # Rapport TXT
+            # TXT report
             lines = []
             lines.append("RAPPORT NEO PI-R — OMR CLINIQUE")
             lines.append("")
@@ -508,24 +540,31 @@ if uploaded_file and run:
             lines.append("Valide" if is_valid else "Invalide")
             for r in reasons:
                 lines.append(f"- {r}")
+
             lines.append("")
-            lines.append("INDICATEURS")
+            lines.append("QUALITÉ LECTURE")
             lines.append(f"Taux de réponse: {response_rate:.1f}%")
-            lines.append(f"Items vides: {stats['blank_count']}")
-            lines.append(f"N cochés: {stats['neutral_marked_count']}")
-            lines.append(f"N imputés: {stats['neutral_imputed_count']}")
-            lines.append(f"N total: {stats['neutral_total_count']}")
+            lines.append(f"Qualité proxy: {confidence:.1f}%")
+            lines.append(f"Vides: {stats['blank_count']} / {total}")
+            lines.append(f"N total: {stats['neutral_total_count']} (cochés={stats['neutral_marked_count']} ; imputés={stats['neutral_imputed_count']})")
             lines.append(f"Ambiguïtés: {stats['ambiguity_count']}")
             lines.append(f"Marquages faibles: {stats['low_mark_count']}")
-            lines.append(f"Encrage médian: {stats['best_ink_median']}")
+
+            lines.append("")
+            lines.append("STYLE DE RÉPONSE (DESCRIPTIF)")
+            for k, v in style.items():
+                lines.append(f"{k}: {v}")
+
             lines.append("")
             lines.append("SCORES PAR FACETTE")
             for row in fac_data:
                 lines.append(f"{row['Facette']}: {row['Score brut']}")
+
             lines.append("")
             lines.append("TOTAUX DOMAINES")
             for row in dom_data:
                 lines.append(f"{row['Domaine']}: {row['Score']}")
+
             lines.append("")
             lines.append("AVERTISSEMENTS")
             if warnings:
@@ -536,6 +575,8 @@ if uploaded_file and run:
             report = "\n".join(lines)
             st.download_button("Télécharger rapport TXT", report, "neo_pir_report.txt", "text/plain")
 
+    except KeyError as e:
+        st.error(f"Erreur de mapping/scoring : clé manquante {e}. Vérifie scoring_key/item_to_facette.")
     except Exception as e:
         st.error(f"Erreur : {e}")
 
