@@ -1,0 +1,347 @@
+import streamlit as st
+import cv2
+import numpy as np
+from imutils import contours
+from imutils.perspective import four_point_transform
+import imutils
+from PIL import Image
+import io
+import csv
+
+# ====================== CLÉ DE CORRECTION ======================
+scoring_key = {
+    1: [4,3,2,1,0], 31: [0,1,2,3,4], 61: [4,3,2,1,0], 91: [0,1,2,3,4], 121: [4,3,2,1,0], 151: [0,1,2,3,4], 181: [4,3,2,1,0], 211: [0,1,2,3,4],
+    2: [0,1,2,3,4], 32: [4,3,2,1,0], 62: [0,1,2,3,4], 92: [4,3,2,1,0], 122: [0,1,2,3,4], 152: [4,3,2,1,0], 182: [0,1,2,3,4], 212: [4,3,2,1,0],
+    3: [0,1,2,3,4], 33: [4,3,2,1,0], 63: [0,1,2,3,4], 93: [4,3,2,1,0], 123: [0,1,2,3,4], 153: [4,3,2,1,0], 183: [0,1,2,3,4], 213: [4,3,2,1,0],
+    4: [4,3,2,1,0], 34: [0,1,2,3,4], 64: [4,3,2,1,0], 94: [0,1,2,3,4], 124: [4,3,2,1,0], 154: [0,1,2,3,4], 184: [4,3,2,1,0], 214: [0,1,2,3,4],
+    5: [0,1,2,3,4], 35: [4,3,2,1,0], 65: [0,1,2,3,4], 95: [4,3,2,1,0], 125: [0,1,2,3,4], 155: [4,3,2,1,0], 185: [0,1,2,3,4], 215: [4,3,2,1,0],
+    6: [0,1,2,3,4], 36: [4,3,2,1,0], 66: [0,1,2,3,4], 96: [4,3,2,1,0], 126: [0,1,2,3,4], 156: [4,3,2,1,0], 186: [0,1,2,3,4], 216: [4,3,2,1,0],
+    7: [4,3,2,1,0], 37: [0,1,2,3,4], 67: [4,3,2,1,0], 97: [0,1,2,3,4], 127: [4,3,2,1,0], 157: [0,1,2,3,4], 187: [4,3,2,1,0], 217: [0,1,2,3,4],
+    8: [4,3,2,1,0], 38: [0,1,2,3,4], 68: [4,3,2,1,0], 98: [0,1,2,3,4], 128: [4,3,2,1,0], 158: [0,1,2,3,4], 188: [4,3,2,1,0], 218: [0,1,2,3,4],
+    9: [0,1,2,3,4], 39: [4,3,2,1,0], 69: [0,1,2,3,4], 99: [4,3,2,1,0], 129: [0,1,2,3,4], 159: [4,3,2,1,0], 189: [0,1,2,3,4], 219: [4,3,2,1,0],
+    10: [4,3,2,1,0], 40: [0,1,2,3,4], 70: [4,3,2,1,0], 100: [0,1,2,3,4], 130: [4,3,2,1,0], 160: [0,1,2,3,4], 190: [4,3,2,1,0], 220: [0,1,2,3,4],
+    11: [4,3,2,1,0], 41: [0,1,2,3,4], 71: [4,3,2,1,0], 101: [0,1,2,3,4], 131: [4,3,2,1,0], 161: [0,1,2,3,4], 191: [4,3,2,1,0], 221: [0,1,2,3,4],
+    12: [0,1,2,3,4], 42: [4,3,2,1,0], 72: [0,1,2,3,4], 102: [4,3,2,1,0], 132: [0,1,2,3,4], 162: [4,3,2,1,0], 192: [0,1,2,3,4], 222: [4,3,2,1,0],
+    13: [0,1,2,3,4], 43: [4,3,2,1,0], 73: [0,1,2,3,4], 103: [4,3,2,1,0], 133: [0,1,2,3,4], 163: [4,3,2,1,0], 193: [0,1,2,3,4], 223: [4,3,2,1,0],
+    14: [4,3,2,1,0], 44: [0,1,2,3,4], 74: [4,3,2,1,0], 104: [0,1,2,3,4], 134: [4,3,2,1,0], 164: [0,1,2,3,4], 194: [4,3,2,1,0], 224: [0,1,2,3,4],
+    15: [0,1,2,3,4], 45: [4,3,2,1,0], 75: [0,1,2,3,4], 105: [4,3,2,1,0], 135: [0,1,2,3,4], 165: [4,3,2,1,0], 195: [0,1,2,3,4], 225: [4,3,2,1,0],
+    16: [0,1,2,3,4], 46: [4,3,2,1,0], 76: [0,1,2,3,4], 106: [4,3,2,1,0], 136: [0,1,2,3,4], 166: [4,3,2,1,0], 196: [0,1,2,3,4], 226: [4,3,2,1,0],
+    17: [4,3,2,1,0], 47: [0,1,2,3,4], 77: [4,3,2,1,0], 107: [0,1,2,3,4], 137: [4,3,2,1,0], 167: [0,1,2,3,4], 197: [4,3,2,1,0], 227: [0,1,2,3,4],
+    18: [4,3,2,1,0], 48: [0,1,2,3,4], 78: [4,3,2,1,0], 108: [0,1,2,3,4], 138: [4,3,2,1,0], 168: [0,1,2,3,4], 198: [4,3,2,1,0], 228: [0,1,2,3,4],
+    19: [0,1,2,3,4], 49: [4,3,2,1,0], 79: [0,1,2,3,4], 109: [4,3,2,1,0], 139: [0,1,2,3,4], 169: [4,3,2,1,0], 199: [0,1,2,3,4], 229: [4,3,2,1,0],
+    20: [4,3,2,1,0], 50: [0,1,2,3,4], 80: [4,3,2,1,0], 110: [0,1,2,3,4], 140: [4,3,2,1,0], 170: [0,1,2,3,4], 200: [4,3,2,1,0], 230: [0,1,2,3,4],
+    21: [4,3,2,1,0], 51: [0,1,2,3,4], 81: [4,3,2,1,0], 111: [0,1,2,3,4], 141: [4,3,2,1,0], 171: [0,1,2,3,4], 201: [4,3,2,1,0], 231: [0,1,2,3,4],
+    22: [0,1,2,3,4], 52: [4,3,2,1,0], 82: [0,1,2,3,4], 112: [4,3,2,1,0], 142: [0,1,2,3,4], 172: [4,3,2,1,0], 202: [0,1,2,3,4], 232: [4,3,2,1,0],
+    23: [0,1,2,3,4], 53: [4,3,2,1,0], 83: [0,1,2,3,4], 113: [4,3,2,1,0], 143: [0,1,2,3,4], 173: [4,3,2,1,0], 203: [0,1,2,3,4], 233: [4,3,2,1,0],
+    24: [4,3,2,1,0], 54: [0,1,2,3,4], 84: [4,3,2,1,0], 114: [0,1,2,3,4], 144: [4,3,2,1,0], 174: [0,1,2,3,4], 204: [4,3,2,1,0], 234: [0,1,2,3,4],
+    25: [0,1,2,3,4], 55: [4,3,2,1,0], 85: [0,1,2,3,4], 115: [4,3,2,1,0], 145: [0,1,2,3,4], 175: [4,3,2,1,0], 205: [0,1,2,3,4], 235: [4,3,2,1,0],
+    26: [0,1,2,3,4], 56: [4,3,2,1,0], 86: [0,1,2,3,4], 116: [4,3,2,1,0], 146: [0,1,2,3,4], 176: [4,3,2,1,0], 206: [0,1,2,3,4], 236: [4,3,2,1,0],
+    27: [4,3,2,1,0], 57: [0,1,2,3,4], 87: [4,3,2,1,0], 117: [0,1,2,3,4], 147: [4,3,2,1,0], 177: [0,1,2,3,4], 207: [4,3,2,1,0], 237: [0,1,2,3,4],
+    28: [4,3,2,1,0], 58: [0,1,2,3,4], 88: [4,3,2,1,0], 118: [0,1,2,3,4], 148: [4,3,2,1,0], 178: [0,1,2,3,4], 208: [4,3,2,1,0], 238: [0,1,2,3,4],
+    29: [0,1,2,3,4], 59: [4,3,2,1,0], 89: [0,1,2,3,4], 119: [4,3,2,1,0], 149: [0,1,2,3,4], 179: [4,3,2,1,0], 209: [0,1,2,3,4], 239: [4,3,2,1,0],
+    30: [4,3,2,1,0], 60: [0,1,2,3,4], 90: [4,3,2,1,0], 120: [0,1,2,3,4], 150: [4,3,2,1,0], 180: [0,1,2,3,4], 210: [4,3,2,1,0], 240: [0,1,2,3,4]
+}
+
+# ====================== MAPPINGS ======================
+item_to_facette = {
+    # Névrosisme
+    1: 'N1', 31: 'N1', 61: 'N1', 91: 'N1', 121: 'N1', 151: 'N1', 181: 'N1', 211: 'N1',
+    6: 'N2', 36: 'N2', 66: 'N2', 96: 'N2', 126: 'N2', 156: 'N2', 186: 'N2', 216: 'N2',
+    11: 'N3', 41: 'N3', 71: 'N3', 101: 'N3', 131: 'N3', 161: 'N3', 191: 'N3', 221: 'N3',
+    16: 'N4', 46: 'N4', 76: 'N4', 106: 'N4', 136: 'N4', 166: 'N4', 196: 'N4', 226: 'N4',
+    21: 'N5', 51: 'N5', 81: 'N5', 111: 'N5', 141: 'N5', 171: 'N5', 201: 'N5', 231: 'N5',
+    26: 'N6', 56: 'N6', 86: 'N6', 116: 'N6', 146: 'N6', 176: 'N6', 206: 'N6', 236: 'N6',
+    # Extraversion
+    2: 'E1', 32: 'E1', 62: 'E1', 92: 'E1', 122: 'E1', 152: 'E1', 182: 'E1', 212: 'E1',
+    7: 'E2', 37: 'E2', 67: 'E2', 97: 'E2', 127: 'E2', 157: 'E2', 187: 'E2', 217: 'E2',
+    12: 'E3', 42: 'E3', 72: 'E3', 102: 'E3', 132: 'E3', 162: 'E3', 192: 'E3', 222: 'E3',
+    17: 'E4', 47: 'E4', 77: 'E4', 107: 'E4', 137: 'E4', 167: 'E4', 197: 'E4', 227: 'E4',
+    22: 'E5', 52: 'E5', 82: 'E5', 112: 'E5', 142: 'E5', 172: 'E5', 202: 'E5', 232: 'E5',
+    27: 'E6', 57: 'E6', 87: 'E6', 117: 'E6', 147: 'E6', 177: 'E6', 207: 'E6', 237: 'E6',
+    # Ouverture
+    3: 'O1', 33: 'O1', 63: 'O1', 93: 'O1', 123: 'O1', 153: 'O1', 183: 'O1', 213: 'O1',
+    8: 'O2', 38: 'O2', 68: 'O2', 98: 'O2', 128: 'O2', 158: 'O2', 188: 'O2', 218: 'O2',
+    13: 'O3', 43: 'O3', 73: 'O3', 103: 'O3', 133: 'O3', 163: 'O3', 193: 'O3', 223: 'O3',
+    18: 'O4', 48: 'O4', 78: 'O4', 108: 'O4', 138: 'O4', 168: 'O4', 198: 'O4', 228: 'O4',
+    23: 'O5', 53: 'O5', 83: 'O5', 113: 'O5', 143: 'O5', 173: 'O5', 203: 'O5', 233: 'O5',
+    28: 'O6', 58: 'O6', 88: 'O6', 118: 'O6', 148: 'O6', 178: 'O6', 208: 'O6', 238: 'O6',
+    # Agréabilité
+    4: 'A1', 34: 'A1', 64: 'A1', 94: 'A1', 124: 'A1', 154: 'A1', 184: 'A1', 214: 'A1',
+    9: 'A2', 39: 'A2', 69: 'A2', 99: 'A2', 129: 'A2', 159: 'A2', 189: 'A2', 219: 'A2',
+    14: 'A3', 44: 'A3', 74: 'A3', 104: 'A3', 134: 'A3', 164: 'A3', 194: 'A3', 224: 'A3',
+    19: 'A4', 49: 'A4', 79: 'A4', 109: 'A4', 139: 'A4', 169: 'A4', 199: 'A4', 229: 'A4',
+    24: 'A5', 54: 'A5', 84: 'A5', 114: 'A5', 144: 'A5', 174: 'A5', 204: 'A5', 234: 'A5',
+    29: 'A6', 59: 'A6', 89: 'A6', 119: 'A6', 149: 'A6', 179: 'A6', 209: 'A6', 239: 'A6',
+    # Conscience
+    5: 'C1', 35: 'C1', 65: 'C1', 95: 'C1', 125: 'C1', 155: 'C1', 185: 'C1', 215: 'C1',
+    10: 'C2', 40: 'C2', 70: 'C2', 100: 'C2', 130: 'C2', 160: 'C2', 190: 'C2', 220: 'C2',
+    15: 'C3', 45: 'C3', 75: 'C3', 105: 'C3', 135: 'C3', 165: 'C3', 195: 'C3', 225: 'C3',
+    20: 'C4', 50: 'C4', 80: 'C4', 110: 'C4', 140: 'C4', 170: 'C4', 200: 'C4', 230: 'C4',
+    25: 'C5', 55: 'C5', 85: 'C5', 115: 'C5', 145: 'C5', 175: 'C5', 205: 'C5', 235: 'C5',
+    30: 'C6', 60: 'C6', 90: 'C6', 120: 'C6', 150: 'C6', 180: 'C6', 210: 'C6', 240: 'C6'
+}
+
+facettes_to_domain = {
+    'N1': 'N', 'N2': 'N', 'N3': 'N', 'N4': 'N', 'N5': 'N', 'N6': 'N',
+    'E1': 'E', 'E2': 'E', 'E3': 'E', 'E4': 'E', 'E5': 'E', 'E6': 'E',
+    'O1': 'O', 'O2': 'O', 'O3': 'O', 'O4': 'O', 'O5': 'O', 'O6': 'O',
+    'A1': 'A', 'A2': 'A', 'A3': 'A', 'A4': 'A', 'A5': 'A', 'A6': 'A',
+    'C1': 'C', 'C2': 'C', 'C3': 'C', 'C4': 'C', 'C5': 'C', 'C6': 'C'
+}
+
+facette_labels = {
+    'N1': 'N1 - Anxiété',
+    'N2': 'N2 - Hostilité colérique',
+    'N3': 'N3 - Dépression',
+    'N4': 'N4 - Timidité',
+    'N5': 'N5 - Impulsivité',
+    'N6': 'N6 - Vulnérabilité',
+    'E1': 'E1 - Chaleur',
+    'E2': 'E2 - Grégarité',
+    'E3': 'E3 - Affirmation de soi',
+    'E4': 'E4 - Activité',
+    'E5': "E5 - Recherche d'excitation",
+    'E6': 'E6 - Émotions positives',
+    'O1': 'O1 - Imagination',
+    'O2': 'O2 - Esthétique',
+    'O3': 'O3 - Sentiments',
+    'O4': 'O4 - Actions',
+    'O5': 'O5 - Idées',
+    'O6': 'O6 - Valeurs',
+    'A1': 'A1 - Confiance',
+    'A2': 'A2 - Franchise',
+    'A3': 'A3 - Altruisme',
+    'A4': 'A4 - Compliance',
+    'A5': 'A5 - Modestie',
+    'A6': 'A6 - Tendresse',
+    'C1': 'C1 - Compétence',
+    'C2': 'C2 - Ordre',
+    'C3': 'C3 - Sens du devoir',
+    'C4': 'C4 - Effort pour réussir',
+    'C5': 'C5 - Autodiscipline',
+    'C6': 'C6 - Délibération'
+}
+
+domain_labels = {
+    'N': 'Névrosisme',
+    'E': 'Extraversion',
+    'O': 'Ouverture',
+    'A': 'Agréabilité',
+    'C': 'Conscience'
+}
+
+# ====================== FONCTIONS ======================
+def preprocess_image(image):
+    if isinstance(image, Image.Image):
+        image = np.array(image)
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)   # PIL → OpenCV (BGR)
+
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    edged = cv2.Canny(blurred, 75, 200)
+    cnts = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = imutils.grab_contours(cnts)
+    docCnt = None
+    if len(cnts) > 0:
+        cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
+        for c in cnts:
+            peri = cv2.arcLength(c, True)
+            approx = cv2.approxPolyDP(c, 0.02 * peri, True)
+            if len(approx) == 4:
+                docCnt = approx
+                break
+    if docCnt is None:
+        raise ValueError("Contour du document non détecté.")
+
+    paper = four_point_transform(image, docCnt.reshape(4, 2))
+    warped = four_point_transform(gray, docCnt.reshape(4, 2))
+    thresh = cv2.adaptiveThreshold(warped, 255, cv2.ADAPTIVE_THRESHOLD_MEAN_C, cv2.THRESH_BINARY_INV, 11, 2)
+    return paper, thresh
+
+
+def detect_bubbles(thresh, min_size=20, ar_min=0.85, ar_max=1.15):
+    cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    cnts = imutils.grab_contours(cnts)
+    questionCnts = []
+    for c in cnts:
+        (x, y, w, h) = cv2.boundingRect(c)
+        ar = w / float(h)
+        if w >= min_size and h >= min_size and ar_min <= ar <= ar_max:
+            questionCnts.append(c)
+    if len(questionCnts) != 150:
+        raise ValueError(f"Nombre de bulles incorrect (détecté {len(questionCnts)}, attendu 150).")
+    questionCnts = contours.sort_contours(questionCnts, method="top-to-bottom")[0]
+    return questionCnts
+
+
+def evaluate_responses(questionCnts, thresh, page_num, min_fill=5, weak_fill=30, ambiguity_diff=15):
+    responses = {}
+    warnings = []
+    for q in range(30):
+        cnts_group = contours.sort_contours(questionCnts[q*5:(q+1)*5])[0]
+        bubbled = None
+        fills = []
+        for (j, c) in enumerate(cnts_group):
+            mask = np.zeros(thresh.shape, dtype="uint8")
+            cv2.drawContours(mask, [c], -1, 255, -1)
+            mask = cv2.bitwise_and(thresh, thresh, mask=mask)
+            total = cv2.countNonZero(mask)
+            area = cv2.contourArea(c)
+            fill_percent = (total / area * 100) if area > 0 else 0
+            fills.append(fill_percent)
+            if bubbled is None or total > bubbled[0]:
+                bubbled = (total, j)
+        item_id = q + 1 + 30 * (page_num - 1)
+        responses[item_id] = bubbled[1]
+        max_fill = fills[bubbled[1]]
+        if max_fill < weak_fill:
+            warnings.append(f"Item {item_id}, Page {page_num}: Détection faible ({max_fill:.1f}%)")
+        sorted_fills = sorted(fills, reverse=True)
+        if len(sorted_fills) > 1 and (sorted_fills[0] - sorted_fills[1]) < ambiguity_diff:
+            warnings.append(f"Item {item_id}, Page {page_num}: Ambiguïté détectée")
+        if max_fill < min_fill:
+            warnings.append(f"Item {item_id}, Page {page_num}: Item non répondu")
+    return responses, warnings
+
+
+def calculate_scores(all_responses):
+    facette_scores = {fac: 0 for fac in facette_labels}
+    for item_id, option_idx in all_responses.items():
+        if item_id in scoring_key and item_id in item_to_facette:
+            score = scoring_key[item_id][option_idx]
+            fac = item_to_facette[item_id]
+            facette_scores[fac] += score
+    domain_scores = {dom: 0 for dom in domain_labels}
+    for fac, score in facette_scores.items():
+        dom = facettes_to_domain[fac]
+        domain_scores[dom] += score
+    return facette_scores, domain_scores
+
+
+# ====================== APPLICATION STREAMLIT ======================
+st.title("🧠 NEO PI-R OMR Scanner – Correction Automatique")
+st.markdown("""
+**Outil professionnel pour scanner les feuilles NEO PI-R**  
+Usage éducatif / recherche uniquement. Pour usage clinique → Pearson / ECPA.
+""")
+
+debug = st.checkbox("Mode debug (logs détaillés)")
+
+min_bubble_size = st.slider("Taille minimale des bulles (px)", 10, 50, 20)
+ar_min = st.slider("Ratio aspect min", 0.5, 1.0, 0.85, 0.05)
+ar_max = st.slider("Ratio aspect max", 1.0, 1.5, 1.15, 0.05)
+
+uploaded_files = st.file_uploader("Uploader les pages (JPG/PNG)", type=['jpg', 'png'], accept_multiple_files=True)
+
+if uploaded_files:
+    if len(uploaded_files) > 8:
+        st.error("Maximum 8 pages (NEO PI-R = 8 pages).")
+    else:
+        page_assign = {}
+        available = list(range(1, 9))
+        used = []
+        for i, file in enumerate(uploaded_files):
+            page_num = st.selectbox(
+                f"Page pour {file.name}",
+                [p for p in available if p not in used],
+                key=f"page_{i}"
+            )
+            used.append(page_num)
+            page_assign[page_num] = file
+
+        if st.button("🚀 Traiter les pages et calculer les scores", type="primary"):
+            all_responses = {}
+            all_warnings = []
+            processed_images = {}
+            original_images = {}
+            page_confidences = []
+
+            for page_num in sorted(page_assign):
+                try:
+                    file = page_assign[page_num]
+                    original = Image.open(file)
+                    original_images[page_num] = original
+
+                    paper, thresh = preprocess_image(original)
+                    questionCnts = detect_bubbles(thresh, min_size=min_bubble_size, ar_min=ar_min, ar_max=ar_max)
+                    responses, warnings = evaluate_responses(questionCnts, thresh, page_num)
+
+                    all_responses.update(responses)
+                    all_warnings.extend(warnings)
+
+                    # Marquer les bulles sélectionnées en vert
+                    for q in range(30):
+                        group = contours.sort_contours(questionCnts[q*5:(q+1)*5])[0]
+                        idx = responses[q + 1 + 30 * (page_num - 1)]
+                        cv2.drawContours(paper, [group[idx]], -1, (0, 255, 0), 3)
+
+                    processed_images[page_num] = paper
+                    confidence = 100 * (1 - len(warnings) / 30)
+                    page_confidences.append(confidence)
+
+                    if debug:
+                        st.write(f"Page {page_num} → {len(warnings)} avertissements, confiance {confidence:.1f}%")
+                except Exception as e:
+                    st.error(f"Erreur page {page_num} : {e}")
+                    all_warnings.append(f"Page {page_num} : {str(e)}")
+
+            if all_responses:
+                facette_scores, domain_scores = calculate_scores(all_responses)
+                global_conf = sum(page_confidences) / len(page_confidences) if page_confidences else 0
+
+                if global_conf < 95:
+                    st.warning(f"⚠️ Confiance globale faible : {global_conf:.1f}% → vérification manuelle conseillée")
+
+                # Affichage images
+                st.subheader("Images traitées")
+                for p in sorted(processed_images):
+                    st.image(original_images[p], caption=f"Page {p} - Originale", use_column_width=True)
+                    st.image(processed_images[p], caption=f"Page {p} - Bulles détectées (vert)", channels="BGR", use_column_width=True)
+
+                # Scores facettes
+                st.subheader("Scores par facette")
+                data = []
+                for fac in sorted(facette_labels):
+                    items = [str(k) for k, v in item_to_facette.items() if v == fac]
+                    data.append({
+                        "Facette": facette_labels[fac],
+                        "Items": ", ".join(items),
+                        "Score brut": facette_scores[fac]
+                    })
+                st.dataframe(data, use_container_width=True)
+
+                # Scores domaines
+                st.subheader("Totaux par domaine")
+                dom_data = [{"Domaine": domain_labels[d], "Score": domain_scores[d]} for d in sorted(domain_labels)]
+                st.dataframe(dom_data, use_container_width=True)
+
+                # Avertissements
+                st.subheader("Avertissements & Validité")
+                if all_warnings:
+                    for w in all_warnings:
+                        st.warning(w)
+                else:
+                    st.success("✅ Détection parfaite ! Aucune anomalie.")
+
+                # Export CSV
+                output = io.StringIO()
+                writer = csv.DictWriter(output, fieldnames=["Facette", "Items", "Score brut"])
+                writer.writeheader()
+                writer.writerows(data)
+                output.write("\n--- TOTAUX PAR DOMAINE ---\n")
+                dom_writer = csv.DictWriter(output, fieldnames=["Domaine", "Score"])
+                dom_writer.writeheader()
+                dom_writer.writerows(dom_data)
+                st.download_button("📥 Télécharger CSV", output.getvalue(), "neo_pir_scores.csv", "text/csv")
+
+                # Rapport TXT
+                report = "RAPPORT NEO PI-R\n\n"
+                for row in data:
+                    report += f"{row['Facette']}: {row['Score brut']}\n"
+                report += "\nTOTAUX DOMAINES\n"
+                for row in dom_data:
+                    report += f"{row['Domaine']}: {row['Score']}\n"
+                report += "\nAvertissements:\n" + "\n".join(all_warnings) if all_warnings else "\nAucun avertissement."
+                st.download_button("📥 Télécharger rapport TXT", report, "neo_pir_report.txt", "text/plain")
+
+st.caption("NEO PI-R OMR Scanner v2.0 – Corrigé & optimisé par Grok")
