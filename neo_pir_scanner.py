@@ -9,7 +9,7 @@ import io
 import csv
 
 # ====================== CLÉ DE CORRECTION ======================
-# (INCHANGÉE)
+# ✅ INCHANGÉE (ta scoring_key complète)
 scoring_key = {
     1: [4,3,2,1,0], 31: [0,1,2,3,4], 61: [4,3,2,1,0], 91: [0,1,2,3,4], 121: [4,3,2,1,0], 151: [0,1,2,3,4], 181: [4,3,2,1,0], 211: [0,1,2,3,4],
     2: [0,1,2,3,4], 32: [4,3,2,1,0], 62: [0,1,2,3,4], 92: [4,3,2,1,0], 122: [0,1,2,3,4], 152: [4,3,2,1,0], 182: [0,1,2,3,4], 212: [4,3,2,1,0],
@@ -44,7 +44,7 @@ scoring_key = {
 }
 
 # ====================== MAPPINGS ======================
-# (INCHANGÉS)
+# ✅ INCHANGÉS (ton mapping complet)
 item_to_facette = {  # ... ton mapping complet ...
     1: 'N1', 31: 'N1', 61: 'N1', 91: 'N1', 121: 'N1', 151: 'N1', 181: 'N1', 211: 'N1',
     6: 'N2', 36: 'N2', 66: 'N2', 96: 'N2', 126: 'N2', 156: 'N2', 186: 'N2', 216: 'N2',
@@ -129,12 +129,9 @@ domain_labels = {
 
 # ====================== FONCTIONS ======================
 def preprocess_image(image):
-    """
-    - Convertit PIL -> BGR OpenCV de manière sûre (RGB/RGBA/L).
-    - Détecte le contour du document, redresse, puis binarise.
-    """
+    """PIL -> OpenCV, détection doc, redressement, binarisation."""
     if isinstance(image, Image.Image):
-        image = image.convert("RGB")  # ✅ évite RGBA / modes PIL
+        image = image.convert("RGB")
         image = np.array(image)
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
 
@@ -164,74 +161,89 @@ def preprocess_image(image):
     paper = four_point_transform(image, docCnt.reshape(4, 2))
     warped = four_point_transform(gray, docCnt.reshape(4, 2))
 
-    # ✅ CORRECTION : ADAPTIVE_THRESH_MEAN_C
     thresh = cv2.adaptiveThreshold(
-        warped,
-        255,
+        warped, 255,
         cv2.ADAPTIVE_THRESH_MEAN_C,
         cv2.THRESH_BINARY_INV,
-        11,
-        2
+        11, 2
     )
     return paper, thresh
 
 
 def detect_bubbles(thresh, min_size=20, ar_min=0.85, ar_max=1.15):
+    """Détecte toutes les bulles de la feuille unique (240 items → 1200 bulles)."""
     cnts = cv2.findContours(thresh.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cnts = imutils.grab_contours(cnts)
 
-    questionCnts = []
+    bubbleCnts = []
     for c in cnts:
         (x, y, w, h) = cv2.boundingRect(c)
         if h == 0:
             continue
         ar = w / float(h)
         if w >= min_size and h >= min_size and (ar_min <= ar <= ar_max):
-            questionCnts.append(c)
+            bubbleCnts.append(c)
 
-    # même exigence que ton code (fiabilité inchangée)
-    if len(questionCnts) != 150:
-        raise ValueError(f"Nombre de bulles incorrect (détecté {len(questionCnts)}, attendu 150).")
+    expected = 240 * 5  # ✅ 1200
+    if len(bubbleCnts) != expected:
+        raise ValueError(f"Nombre de bulles incorrect (détecté {len(bubbleCnts)}, attendu {expected}).")
 
-    questionCnts = contours.sort_contours(questionCnts, method="top-to-bottom")[0]
-    return questionCnts
+    # Tri top-to-bottom, puis on découpera par lignes (40 bulles / ligne)
+    bubbleCnts = contours.sort_contours(bubbleCnts, method="top-to-bottom")[0]
+    return bubbleCnts
 
 
-def evaluate_responses(questionCnts, thresh, page_num, min_fill=5, weak_fill=30, ambiguity_diff=15):
+def evaluate_responses_single_sheet(bubbleCnts, thresh, min_fill=5, weak_fill=30, ambiguity_diff=15):
+    """
+    Feuille unique : 30 lignes.
+    Chaque ligne contient 8 items ; chaque item a 5 bulles => 40 bulles / ligne.
+    """
     responses = {}
     warnings = []
 
-    for q in range(30):
-        cnts_group = contours.sort_contours(questionCnts[q * 5:(q + 1) * 5])[0]
-        bubbled = None
-        fills = []
+    rows = 30
+    items_per_row = 8
+    choices_per_item = 5
+    bubbles_per_row = items_per_row * choices_per_item  # 40
 
-        for (j, c) in enumerate(cnts_group):
-            mask = np.zeros(thresh.shape, dtype="uint8")
-            cv2.drawContours(mask, [c], -1, 255, -1)
-            masked = cv2.bitwise_and(thresh, thresh, mask=mask)
+    for r in range(rows):
+        row_cnts = bubbleCnts[r * bubbles_per_row:(r + 1) * bubbles_per_row]
+        row_cnts = contours.sort_contours(row_cnts, method="left-to-right")[0]
 
-            total = cv2.countNonZero(masked)
-            area = cv2.contourArea(c)
-            fill_percent = (total / area * 100) if area > 0 else 0
+        for c in range(items_per_row):
+            item_cnts = row_cnts[c * choices_per_item:(c + 1) * choices_per_item]
+            item_cnts = contours.sort_contours(item_cnts, method="left-to-right")[0]
 
-            fills.append(fill_percent)
-            if bubbled is None or total > bubbled[0]:
-                bubbled = (total, j)
+            bubbled = None
+            fills = []
 
-        item_id = q + 1 + 30 * (page_num - 1)
-        responses[item_id] = bubbled[1]
+            for (j, cnt) in enumerate(item_cnts):
+                mask = np.zeros(thresh.shape, dtype="uint8")
+                cv2.drawContours(mask, [cnt], -1, 255, -1)
+                masked = cv2.bitwise_and(thresh, thresh, mask=mask)
 
-        max_fill = fills[bubbled[1]]
-        if max_fill < weak_fill:
-            warnings.append(f"Item {item_id}, Page {page_num}: Détection faible ({max_fill:.1f}%)")
+                total = cv2.countNonZero(masked)
+                area = cv2.contourArea(cnt)
+                fill_percent = (total / area * 100) if area > 0 else 0
 
-        sorted_fills = sorted(fills, reverse=True)
-        if len(sorted_fills) > 1 and (sorted_fills[0] - sorted_fills[1]) < ambiguity_diff:
-            warnings.append(f"Item {item_id}, Page {page_num}: Ambiguïté détectée")
+                fills.append(fill_percent)
+                if bubbled is None or total > bubbled[0]:
+                    bubbled = (total, j)
 
-        if max_fill < min_fill:
-            warnings.append(f"Item {item_id}, Page {page_num}: Item non répondu")
+            # ✅ item_id : colonne 0 = items 1-30, colonne 1 = 31-60, ...
+            item_id = (r + 1) + 30 * c
+            responses[item_id] = bubbled[1]
+
+            max_fill = fills[bubbled[1]]
+            if max_fill < weak_fill:
+                warnings.append(f"Item {item_id}: Détection faible ({max_fill:.1f}%)")
+
+            sorted_fills = sorted(fills, reverse=True)
+            if len(sorted_fills) > 1 and (sorted_fills[0] - sorted_fills[1]) < ambiguity_diff:
+                warnings.append(f"Item {item_id}: Ambiguïté détectée")
+
+            if max_fill < min_fill:
+                warnings.append(f"Item {item_id}: Item non répondu")
 
     return responses, warnings
 
@@ -254,164 +266,133 @@ def calculate_scores(all_responses):
 
 
 # ====================== APPLICATION STREAMLIT ======================
-st.title("🧠 NEO PI-R OMR Scanner Smart")
-st.markdown(
-    """
-    **Outil professionnel pour scanner les feuilles NEO PI-R**  
-    Usage personnel uniquement.
-    """
-)
+st.title("🧠 NEO PI-R OMR Scanner Smart — Feuille unique (240 items)")
+st.markdown("**Scanner une seule feuille de réponses NEO PI-R (240 items)**")
 
 debug = st.checkbox("Mode debug (logs détaillés)")
 
-min_bubble_size = st.slider("Taille minimale des bulles (px)", 10, 50, 20)
+min_bubble_size = st.slider("Taille minimale des bulles (px)", 10, 80, 20)
 ar_min = st.slider("Ratio aspect min", 0.5, 1.0, 0.85, 0.05)
-ar_max = st.slider("Ratio aspect max", 1.0, 1.5, 1.15, 0.05)
+ar_max = st.slider("Ratio aspect max", 1.0, 1.8, 1.15, 0.05)
 
-uploaded_files = st.file_uploader(
-    "Uploader les pages (JPG/PNG)",
+uploaded_file = st.file_uploader(
+    "Uploader la feuille (JPG/PNG)",
     type=["jpg", "png", "jpeg"],
-    accept_multiple_files=True
+    accept_multiple_files=False
 )
 
-if uploaded_files:
-    if len(uploaded_files) > 8:
-        st.error("Maximum 8 pages (NEO PI-R = 8 pages).")
-    else:
-        st.info("Assigne une page unique à chaque fichier.")
+if uploaded_file and st.button("🚀 Traiter la feuille et calculer les scores", type="primary"):
+    all_warnings = []
 
-        page_assign = {}
-        available = list(range(1, 9))
-        used = []
+    try:
+        original = Image.open(uploaded_file)
+        paper, thresh = preprocess_image(original)
 
-        for i, file in enumerate(uploaded_files):
-            choices = [p for p in available if p not in used]
-            if not choices:
-                st.error("Plus de pages disponibles à assigner.")
-                break
+        bubbleCnts = detect_bubbles(
+            thresh,
+            min_size=min_bubble_size,
+            ar_min=ar_min,
+            ar_max=ar_max
+        )
 
-            page_num = st.selectbox(
-                f"Page pour {file.name}",
-                choices,
-                key=f"page_{i}"
-            )
-            used.append(page_num)
-            page_assign[page_num] = file
+        responses, warnings = evaluate_responses_single_sheet(bubbleCnts, thresh)
+        all_warnings.extend(warnings)
 
-        if st.button("🚀 Traiter les pages et calculer les scores", type="primary"):
-            all_responses = {}
-            all_warnings = []
-            processed_images = {}
-            original_images = {}
-            page_confidences = []
+        # Dessiner en vert les bulles choisies
+        rows = 30
+        items_per_row = 8
+        choices_per_item = 5
+        bubbles_per_row = items_per_row * choices_per_item  # 40
 
-            for page_num in sorted(page_assign):
-                try:
-                    file = page_assign[page_num]
-                    original = Image.open(file)
-                    original_images[page_num] = original
+        for r in range(rows):
+            row_cnts = bubbleCnts[r * bubbles_per_row:(r + 1) * bubbles_per_row]
+            row_cnts = contours.sort_contours(row_cnts, method="left-to-right")[0]
 
-                    paper, thresh = preprocess_image(original)
-                    questionCnts = detect_bubbles(
-                        thresh,
-                        min_size=min_bubble_size,
-                        ar_min=ar_min,
-                        ar_max=ar_max
-                    )
-                    responses, warnings = evaluate_responses(questionCnts, thresh, page_num)
+            for c in range(items_per_row):
+                item_id = (r + 1) + 30 * c
+                idx = responses[item_id]
+                item_cnts = row_cnts[c * choices_per_item:(c + 1) * choices_per_item]
+                item_cnts = contours.sort_contours(item_cnts, method="left-to-right")[0]
+                cv2.drawContours(paper, [item_cnts[idx]], -1, (0, 255, 0), 3)
 
-                    all_responses.update(responses)
-                    all_warnings.extend(warnings)
+        # Scores
+        facette_scores, domain_scores = calculate_scores(responses)
 
-                    # Marquer les bulles sélectionnées en vert (logique inchangée)
-                    for q in range(30):
-                        group = contours.sort_contours(questionCnts[q * 5:(q + 1) * 5])[0]
-                        item_id = q + 1 + 30 * (page_num - 1)
-                        idx = responses[item_id]
-                        cv2.drawContours(paper, [group[idx]], -1, (0, 255, 0), 3)
+        # Confiance (sur 240 items)
+        conf = 100 * (1 - len(all_warnings) / 240)
+        if conf < 95:
+            st.warning(f"⚠️ Confiance faible : {conf:.1f}% → vérification manuelle conseillée")
+        else:
+            st.success(f"✅ Confiance : {conf:.1f}%")
 
-                    processed_images[page_num] = paper
+        # Affichage images
+        st.subheader("Image")
+        st.image(original, caption="Originale", use_container_width=True)
+        st.image(paper, caption="Bulles détectées (vert)", channels="BGR", use_container_width=True)
 
-                    confidence = 100 * (1 - len(warnings) / 30)
-                    page_confidences.append(confidence)
+        # Scores facettes
+        st.subheader("Scores par facette")
+        data = []
+        for fac in sorted(facette_labels):
+            items = [str(k) for k, v in item_to_facette.items() if v == fac]
+            data.append({
+                "Facette": facette_labels[fac],
+                "Items": ", ".join(items),
+                "Score brut": facette_scores[fac]
+            })
+        st.dataframe(data, use_container_width=True)
 
-                    if debug:
-                        st.write(f"Page {page_num} → {len(warnings)} avertissements, confiance {confidence:.1f}%")
+        # Scores domaines
+        st.subheader("Totaux par domaine")
+        dom_data = [{"Domaine": domain_labels[d], "Score": domain_scores[d]} for d in sorted(domain_labels)]
+        st.dataframe(dom_data, use_container_width=True)
 
-                except Exception as e:
-                    st.error(f"Erreur page {page_num} : {e}")
-                    all_warnings.append(f"Page {page_num} : {str(e)}")
+        # Avertissements
+        st.subheader("Avertissements")
+        if all_warnings:
+            for w in all_warnings:
+                st.warning(w)
+        else:
+            st.success("✅ Aucune anomalie.")
 
-            if all_responses:
-                facette_scores, domain_scores = calculate_scores(all_responses)
-                global_conf = (sum(page_confidences) / len(page_confidences)) if page_confidences else 0
+        # Export CSV
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=["Facette", "Items", "Score brut"])
+        writer.writeheader()
+        writer.writerows(data)
 
-                if global_conf < 95:
-                    st.warning(f"⚠️ Confiance globale faible : {global_conf:.1f}% → vérification manuelle conseillée")
+        output.write("\n--- TOTAUX PAR DOMAINE ---\n")
+        dom_writer = csv.DictWriter(output, fieldnames=["Domaine", "Score"])
+        dom_writer.writeheader()
+        dom_writer.writerows(dom_data)
 
-                # Affichage images
-                st.subheader("Images traitées")
-                for p in sorted(processed_images):
-                    st.image(original_images[p], caption=f"Page {p} - Originale", use_container_width=True)
-                    st.image(processed_images[p], caption=f"Page {p} - Bulles détectées (vert)", channels="BGR", use_container_width=True)
+        st.download_button("📥 Télécharger CSV", output.getvalue(), "neo_pir_scores.csv", "text/csv")
 
-                # Scores facettes
-                st.subheader("Scores par facette")
-                data = []
-                for fac in sorted(facette_labels):
-                    items = [str(k) for k, v in item_to_facette.items() if v == fac]
-                    data.append({
-                        "Facette": facette_labels[fac],
-                        "Items": ", ".join(items),
-                        "Score brut": facette_scores[fac]
-                    })
-                st.dataframe(data, use_container_width=True)
+        # Rapport TXT
+        report_lines = ["RAPPORT NEO PI-R", ""]
+        report_lines.append("SCORES PAR FACETTE")
+        for row in data:
+            report_lines.append(f"{row['Facette']}: {row['Score brut']}")
 
-                # Scores domaines
-                st.subheader("Totaux par domaine")
-                dom_data = [{"Domaine": domain_labels[d], "Score": domain_scores[d]} for d in sorted(domain_labels)]
-                st.dataframe(dom_data, use_container_width=True)
+        report_lines.append("")
+        report_lines.append("TOTAUX DOMAINES")
+        for row in dom_data:
+            report_lines.append(f"{row['Domaine']}: {row['Score']}")
 
-                # Avertissements
-                st.subheader("Avertissements & Validité")
-                if all_warnings:
-                    for w in all_warnings:
-                        st.warning(w)
-                else:
-                    st.success("✅ Détection parfaite ! Aucune anomalie.")
+        report_lines.append("")
+        report_lines.append("Avertissements:")
+        if all_warnings:
+            report_lines.extend(all_warnings)
+        else:
+            report_lines.append("Aucun avertissement.")
 
-                # Export CSV
-                output = io.StringIO()
-                writer = csv.DictWriter(output, fieldnames=["Facette", "Items", "Score brut"])
-                writer.writeheader()
-                writer.writerows(data)
+        report = "\n".join(report_lines)
+        st.download_button("📥 Télécharger rapport TXT", report, "neo_pir_report.txt", "text/plain")
 
-                output.write("\n--- TOTAUX PAR DOMAINE ---\n")
-                dom_writer = csv.DictWriter(output, fieldnames=["Domaine", "Score"])
-                dom_writer.writeheader()
-                dom_writer.writerows(dom_data)
+        if debug:
+            st.write(f"Nb avertissements: {len(all_warnings)} / 240")
 
-                st.download_button("📥 Télécharger CSV", output.getvalue(), "neo_pir_scores.csv", "text/csv")
-
-                # Rapport TXT (✅ correction du bug de priorité + concat)
-                report_lines = ["RAPPORT NEO PI-R", ""]
-                report_lines.append("SCORES PAR FACETTE")
-                for row in data:
-                    report_lines.append(f"{row['Facette']}: {row['Score brut']}")
-
-                report_lines.append("")
-                report_lines.append("TOTAUX DOMAINES")
-                for row in dom_data:
-                    report_lines.append(f"{row['Domaine']}: {row['Score']}")
-
-                report_lines.append("")
-                report_lines.append("Avertissements:")
-                if all_warnings:
-                    report_lines.extend(all_warnings)
-                else:
-                    report_lines.append("Aucun avertissement.")
-
-                report = "\n".join(report_lines)
-                st.download_button("📥 Télécharger rapport TXT", report, "neo_pir_report.txt", "text/plain")
+    except Exception as e:
+        st.error(f"Erreur : {e}")
 
 st.caption("Version développée par YACINE PSY")
