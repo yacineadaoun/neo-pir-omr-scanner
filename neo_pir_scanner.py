@@ -266,8 +266,8 @@ def calculate_scores(all_responses):
 
 
 # ====================== APPLICATION STREAMLIT ======================
-st.title("🧠 NEO PI-R OMR Scanner Smart — Feuille unique (240 items)")
-st.markdown("**Scanner une seule feuille de réponses NEO PI-R (240 items)**")
+st.title("NEO PI-R OMR")
+st.markdown("**OMR Scanner Smart**")
 
 debug = st.checkbox("Mode debug (logs détaillés)")
 
