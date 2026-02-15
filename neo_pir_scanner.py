@@ -219,10 +219,10 @@ def calculate_scores(all_responses):
 
 
 # ====================== APPLICATION STREAMLIT ======================
-st.title("NEO PI-R OMR Scanner – Correction Automatique")
+st.title("NEO PI-R OMR Scanner Smart")
 st.markdown("""
 **Outil professionnel pour scanner les feuilles NEO PI-R**  
-Usage éducatif / recherche uniquement.
+Usage personnel uniquement.
 """)
 
 debug = st.checkbox("Mode debug (logs détaillés)")
