@@ -3,4 +3,9 @@ numpy
 pillow
 imutils
 scipy
+opencv-python-headlessstreamlit
+numpy
+pillow
+imutils
+scipy
 opencv-python-headless
