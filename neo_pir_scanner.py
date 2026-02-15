@@ -266,26 +266,126 @@ def calculate_scores(all_responses):
 
 
 # ====================== APPLICATION STREAMLIT ======================
-st.title("NeoScore Pro")
-st.markdown("**OMR Smart Scoring pour NEO PI-R**")
+    import streamlit as st
+import io
+import csv
+from PIL import Image
 
-debug = st.checkbox("Mode debug (logs détaillés)")
-
-min_bubble_size = st.slider("Taille minimale des bulles (px)", 10, 80, 20)
-ar_min = st.slider("Ratio aspect min", 0.5, 1.0, 0.85, 0.05)
-ar_max = st.slider("Ratio aspect max", 1.0, 1.8, 1.15, 0.05)
-
-uploaded_file = st.file_uploader(
-    "Uploader la feuille (JPG/PNG)",
-    type=["jpg", "png", "jpeg"],
-    accept_multiple_files=False
+# ---------- PAGE CONFIG ----------
+st.set_page_config(
+    page_title="NEO PI-R Scanner",
+    page_icon="🧾",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-if uploaded_file and st.button("🚀 Traiter la feuille et calculer les scores", type="primary"):
+# ---------- CSS PRO ----------
+st.markdown(
+    """
+    <style>
+      /* Global spacing */
+      .block-container { padding-top: 1.2rem; padding-bottom: 2rem; }
+
+      /* Titles */
+      h1, h2, h3 { letter-spacing: -0.2px; }
+
+      /* Buttons */
+      div.stButton > button {
+        width: 100%;
+        border-radius: 10px;
+        padding: 0.65rem 1rem;
+        font-weight: 600;
+      }
+
+      /* KPI cards */
+      .kpi {
+        border: 1px solid rgba(49, 51, 63, 0.15);
+        border-radius: 14px;
+        padding: 14px 16px;
+        background: rgba(255,255,255,0.6);
+      }
+      .kpi-label { font-size: 12px; color: rgba(49, 51, 63, 0.6); margin-bottom: 4px; }
+      .kpi-value { font-size: 22px; font-weight: 700; }
+      .kpi-sub { font-size: 12px; color: rgba(49, 51, 63, 0.6); margin-top: 4px; }
+
+      /* Section dividers */
+      .section {
+        border: 1px solid rgba(49, 51, 63, 0.12);
+        border-radius: 16px;
+        padding: 16px;
+        background: rgba(255,255,255,0.4);
+      }
+
+      /* Footer */
+      .footer {
+        text-align: center;
+        color: rgba(49, 51, 63, 0.55);
+        font-size: 12px;
+        padding-top: 14px;
+      }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+# ---------- HEADER ----------
+left, right = st.columns([0.75, 0.25], vertical_alignment="bottom")
+with left:
+    st.title("NEO PI-R Scanner")
+    st.caption("Analyse automatisée d’une feuille unique (240 items) — Usage professionnel")
+with right:
+    st.write("")  # spacing
+
+# ---------- SIDEBAR ----------
+with st.sidebar:
+    st.markdown("## Paramètres")
+    debug = st.toggle("Mode debug", value=False)
+
+    st.markdown("---")
+    st.markdown("### Détection des bulles")
+    min_bubble_size = st.slider("Taille minimale (px)", 10, 80, 20)
+    ar_min = st.slider("Ratio aspect min", 0.50, 1.00, 0.85, 0.05)
+    ar_max = st.slider("Ratio aspect max", 1.00, 1.80, 1.15, 0.05)
+
+    st.markdown("---")
+    st.markdown("### Seuils qualité")
+    min_fill = st.slider("Seuil 'non répondu' (%)", 0, 20, 5)
+    weak_fill = st.slider("Seuil 'détection faible' (%)", 5, 60, 30)
+    ambiguity_diff = st.slider("Seuil 'ambiguïté' (diff %)", 5, 40, 15)
+
+    st.markdown("---")
+    st.markdown("### À propos")
+    st.caption("NEO PI-R Scanner — v1.0 (Essai)")
+    st.caption("© 2026 Yacine Adaoun — Tous droits réservés")
+
+# ---------- INPUT ----------
+st.markdown("### Import")
+colA, colB = st.columns([0.65, 0.35], vertical_alignment="top")
+
+with colA:
+    uploaded_file = st.file_uploader(
+        "Déposer la feuille de réponses (JPG/PNG)",
+        type=["jpg", "jpeg", "png"],
+        accept_multiple_files=False
+    )
+    st.caption("Conseil : photo nette, feuille à plat, bonne lumière, pas d’ombre.")
+
+with colB:
+    st.markdown('<div class="section">', unsafe_allow_html=True)
+    st.markdown("**Contrôles**")
+    run = st.button("Lancer l’analyse", type="primary", disabled=(uploaded_file is None))
+    st.markdown("Cette action détecte les bulles, calcule les scores et génère les exports.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ---------- RUN ----------
+if uploaded_file and run:
     all_warnings = []
 
     try:
+        # 1) load image
         original = Image.open(uploaded_file)
+
+        # 2) preprocess + detect
         paper, thresh = preprocess_image(original)
 
         bubbleCnts = detect_bubbles(
@@ -295,10 +395,16 @@ if uploaded_file and st.button("🚀 Traiter la feuille et calculer les scores",
             ar_max=ar_max
         )
 
-        responses, warnings = evaluate_responses_single_sheet(bubbleCnts, thresh)
+        responses, warnings = evaluate_responses_single_sheet(
+            bubbleCnts,
+            thresh,
+            min_fill=min_fill,
+            weak_fill=weak_fill,
+            ambiguity_diff=ambiguity_diff
+        )
         all_warnings.extend(warnings)
 
-        # Dessiner en vert les bulles choisies
+        # 3) draw selected bubbles in green
         rows = 30
         items_per_row = 8
         choices_per_item = 5
@@ -315,84 +421,136 @@ if uploaded_file and st.button("🚀 Traiter la feuille et calculer les scores",
                 item_cnts = contours.sort_contours(item_cnts, method="left-to-right")[0]
                 cv2.drawContours(paper, [item_cnts[idx]], -1, (0, 255, 0), 3)
 
-        # Scores
+        # 4) scores
         facette_scores, domain_scores = calculate_scores(responses)
 
-        # Confiance (sur 240 items)
-        conf = 100 * (1 - len(all_warnings) / 240)
+        # 5) KPIs
+        total_items = 240
+        warning_count = len(all_warnings)
+        conf = 100 * (1 - warning_count / total_items)
+
+        st.markdown("### Résultats")
+        k1, k2, k3 = st.columns(3)
+        k1.markdown(f"""
+            <div class="kpi">
+              <div class="kpi-label">Confiance globale</div>
+              <div class="kpi-value">{conf:.1f}%</div>
+              <div class="kpi-sub">Basée sur {total_items} items</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        k2.markdown(f"""
+            <div class="kpi">
+              <div class="kpi-label">Avertissements</div>
+              <div class="kpi-value">{warning_count}</div>
+              <div class="kpi-sub">Non-réponses / faible / ambiguïtés</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        k3.markdown(f"""
+            <div class="kpi">
+              <div class="kpi-label">Items analysés</div>
+              <div class="kpi-value">{len(responses)}</div>
+              <div class="kpi-sub">Attendu: {total_items}</div>
+            </div>
+        """, unsafe_allow_html=True)
+
         if conf < 95:
-            st.warning(f"⚠️ Confiance faible : {conf:.1f}% → vérification manuelle conseillée")
+            st.warning(f"Qualité à vérifier : confiance {conf:.1f}% (relecture recommandée).")
         else:
-            st.success(f"✅ Confiance : {conf:.1f}%")
+            st.success(f"Analyse OK : confiance {conf:.1f}%.")
 
-        # Affichage images
-        st.subheader("Image")
-        st.image(original, caption="Originale", use_container_width=True)
-        st.image(paper, caption="Bulles détectées (vert)", channels="BGR", use_container_width=True)
+        # 6) tabs
+        tab1, tab2, tab3, tab4 = st.tabs(["Scores", "Images", "Avertissements", "Exports"])
 
-        # Scores facettes
-        st.subheader("Scores par facette")
-        data = []
-        for fac in sorted(facette_labels):
-            items = [str(k) for k, v in item_to_facette.items() if v == fac]
-            data.append({
-                "Facette": facette_labels[fac],
-                "Items": ", ".join(items),
-                "Score brut": facette_scores[fac]
-            })
-        st.dataframe(data, use_container_width=True)
+        with tab1:
+            # facettes
+            data = []
+            for fac in sorted(facette_labels):
+                items = [str(k) for k, v in item_to_facette.items() if v == fac]
+                data.append({
+                    "Facette": facette_labels[fac],
+                    "Items": ", ".join(items),
+                    "Score brut": facette_scores[fac]
+                })
+            st.subheader("Scores par facette")
+            st.dataframe(data, use_container_width=True, hide_index=True)
 
-        # Scores domaines
-        st.subheader("Totaux par domaine")
-        dom_data = [{"Domaine": domain_labels[d], "Score": domain_scores[d]} for d in sorted(domain_labels)]
-        st.dataframe(dom_data, use_container_width=True)
+            dom_data = [{"Domaine": domain_labels[d], "Score": domain_scores[d]} for d in sorted(domain_labels)]
+            st.subheader("Totaux par domaine")
+            st.dataframe(dom_data, use_container_width=True, hide_index=True)
 
-        # Avertissements
-        st.subheader("Avertissements")
-        if all_warnings:
-            for w in all_warnings:
-                st.warning(w)
-        else:
-            st.success("✅ Aucune anomalie.")
+        with tab2:
+            c1, c2 = st.columns(2)
+            with c1:
+                st.subheader("Original")
+                st.image(original, use_container_width=True)
+            with c2:
+                st.subheader("Détection")
+                st.image(paper, channels="BGR", use_container_width=True)
 
-        # Export CSV
-        output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=["Facette", "Items", "Score brut"])
-        writer.writeheader()
-        writer.writerows(data)
+        with tab3:
+            st.subheader("Journal de contrôle")
+            if all_warnings:
+                with st.expander("Afficher les avertissements", expanded=True):
+                    for w in all_warnings:
+                        st.warning(w)
+            else:
+                st.success("Aucun avertissement détecté.")
 
-        output.write("\n--- TOTAUX PAR DOMAINE ---\n")
-        dom_writer = csv.DictWriter(output, fieldnames=["Domaine", "Score"])
-        dom_writer.writeheader()
-        dom_writer.writerows(dom_data)
+            if debug:
+                st.code(
+                    f"debug: warnings={warning_count}, conf={conf:.2f}, bubbles={len(bubbleCnts)}",
+                    language="text"
+                )
 
-        st.download_button("📥 Télécharger CSV", output.getvalue(), "neo_pir_scores.csv", "text/csv")
+        with tab4:
+            st.subheader("Exports")
+            # CSV
+            output = io.StringIO()
+            writer = csv.DictWriter(output, fieldnames=["Facette", "Items", "Score brut"])
+            writer.writeheader()
+            writer.writerows(data)
 
-        # Rapport TXT
-        report_lines = ["RAPPORT NEO PI-R", ""]
-        report_lines.append("SCORES PAR FACETTE")
-        for row in data:
-            report_lines.append(f"{row['Facette']}: {row['Score brut']}")
+            output.write("\n--- TOTAUX PAR DOMAINE ---\n")
+            dom_writer = csv.DictWriter(output, fieldnames=["Domaine", "Score"])
+            dom_writer.writeheader()
+            dom_writer.writerows(dom_data)
 
-        report_lines.append("")
-        report_lines.append("TOTAUX DOMAINES")
-        for row in dom_data:
-            report_lines.append(f"{row['Domaine']}: {row['Score']}")
+            st.download_button(
+                "Télécharger le CSV",
+                output.getvalue(),
+                file_name="neo_pir_scores.csv",
+                mime="text/csv"
+            )
 
-        report_lines.append("")
-        report_lines.append("Avertissements:")
-        if all_warnings:
-            report_lines.extend(all_warnings)
-        else:
-            report_lines.append("Aucun avertissement.")
+            # TXT report
+            report_lines = ["RAPPORT NEO PI-R", ""]
+            report_lines.append("SCORES PAR FACETTE")
+            for row in data:
+                report_lines.append(f"{row['Facette']}: {row['Score brut']}")
 
-        report = "\n".join(report_lines)
-        st.download_button("📥 Télécharger rapport TXT", report, "neo_pir_report.txt", "text/plain")
+            report_lines.append("")
+            report_lines.append("TOTAUX DOMAINES")
+            for row in dom_data:
+                report_lines.append(f"{row['Domaine']}: {row['Score']}")
 
-        if debug:
-            st.write(f"Nb avertissements: {len(all_warnings)} / 240")
+            report_lines.append("")
+            report_lines.append("Avertissements:")
+            if all_warnings:
+                report_lines.extend(all_warnings)
+            else:
+                report_lines.append("Aucun avertissement.")
+
+            report = "\n".join(report_lines)
+            st.download_button(
+                "Télécharger le rapport TXT",
+                report,
+                file_name="neo_pir_report.txt",
+                mime="text/plain"
+            )
 
     except Exception as e:
         st.error(f"Erreur : {e}")
 
-st.caption("Version développée par YACINE PSY")
+st.markdown("<div class='footer'>NEO PI-R Scanner — v1.0 (Essai) · © 2026 Yacine Adaoun</div>", unsafe_allow_html=True)
