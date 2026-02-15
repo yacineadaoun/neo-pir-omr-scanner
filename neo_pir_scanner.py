@@ -344,4 +344,4 @@ if uploaded_files:
                 report += "\nAvertissements:\n" + "\n".join(all_warnings) if all_warnings else "\nAucun avertissement."
                 st.download_button("📥 Télécharger rapport TXT", report, "neo_pir_report.txt", "text/plain")
 
-st.caption("NEO PI-R OMR Scanner v2.0 – Corrigé & optimisé par Grok")
+st.caption("Version développée par YACINE")
