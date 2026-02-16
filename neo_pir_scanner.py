@@ -650,4 +650,4 @@ if uploaded:
         except Exception as e:
             st.error(f"Erreur : {e}")
 
-st.markdown("<div class='footer'>NEO PI-R — OMR Clinique · © 2026</div>", unsafe_allow_html=True)
+st.markdown("<div class='footer'>NEO PI-R — YACINE ADAOUN· © 2026</div>", unsafe_allow_html=True)
