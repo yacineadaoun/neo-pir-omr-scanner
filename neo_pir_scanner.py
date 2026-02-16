@@ -1,10 +1,3 @@
-# ============================================================
-# NEO PI-R — OMR Clinique (Smartphone) — SINGLE FILE
-# Lecture "lettres entourées" FD / D / N / A / FA
-# Scoring items directs/inversés via scoring_key
-# Validité: vides ≥ 15 ou N ≥ 42 => INVALIDE
-# ============================================================
-
 from __future__ import annotations
 
 import io
@@ -19,61 +12,88 @@ import imutils
 from imutils.perspective import four_point_transform
 from PIL import Image
 
-# ==============================
-# STREAMLIT CONFIG
-# ==============================
-st.set_page_config(
-    page_title="NEO PI-R — OMR Clinique",
-    page_icon="📄",
-    layout="wide",
-    initial_sidebar_state="expanded",
-)
-
-st.markdown(
-    """
-    <style>
-      .block-container { padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1400px; }
-      h1, h2, h3 { letter-spacing: -0.2px; }
-      div.stButton > button {
-        width: 100%;
-        border-radius: 10px;
-        padding: 0.75rem 1rem;
-        font-weight: 650;
-      }
-      .card {
-        border: 1px solid rgba(49, 51, 63, 0.14);
-        border-radius: 14px;
-        padding: 14px 16px;
-        background: rgba(255,255,255,0.65);
-      }
-      .label { font-size: 12px; color: rgba(49, 51, 63, 0.65); margin-bottom: 4px; }
-      .value { font-size: 22px; font-weight: 800; }
-      .sub { font-size: 12px; color: rgba(49, 51, 63, 0.65); margin-top: 4px; }
-      .footer {
-        text-align: center;
-        color: rgba(49, 51, 63, 0.55);
-        font-size: 12px;
-        padding-top: 16px;
-      }
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
 
 # ============================================================
-# 1) TABLES — COLLE ICI TES 2 TABLES COMPLETES
+# NEO PI-R — OMR Clinique (Feuille sans bulles)
+# - Lettres FD / D / N / A / FA entourées
+# - Validité :
+#   * Items vides >= 15 => INVALIDE
+#   * N cochés >= 42     => INVALIDE (N réellement cochés, pas imputés)
+# - Imputation scientifique :
+#   * item vide => N (2 points via scoring_key)
 # ============================================================
 
-# 1.1) scoring_key : dict[int] -> list[5]
-#  - chaque item doit être [4,3,2,1,0] ou [0,1,2,3,4]
-#  - l'index 2 (N) doit être 2
+# ====================== SCORING KEY (COMPLET 1..240) ======================
+# scoring_key[item] = [score_FD, score_D, score_N, score_A, score_FA]
 scoring_key: Dict[int, List[int]] = {
-    # >>> COLLE ICI TON scoring_key COMPLET (1..240) <<<
+    1: [4,3,2,1,0], 31: [0,1,2,3,4], 61: [4,3,2,1,0], 91: [0,1,2,3,4], 121: [4,3,2,1,0], 151: [0,1,2,3,4], 181: [4,3,2,1,0], 211: [0,1,2,3,4],
+    2: [0,1,2,3,4], 32: [4,3,2,1,0], 62: [0,1,2,3,4], 92: [4,3,2,1,0], 122: [0,1,2,3,4], 152: [4,3,2,1,0], 182: [0,1,2,3,4], 212: [4,3,2,1,0],
+    3: [0,1,2,3,4], 33: [4,3,2,1,0], 63: [0,1,2,3,4], 93: [4,3,2,1,0], 123: [0,1,2,3,4], 153: [4,3,2,1,0], 183: [0,1,2,3,4], 213: [4,3,2,1,0],
+    4: [4,3,2,1,0], 34: [0,1,2,3,4], 64: [4,3,2,1,0], 94: [0,1,2,3,4], 124: [4,3,2,1,0], 154: [0,1,2,3,4], 184: [4,3,2,1,0], 214: [0,1,2,3,4],
+    5: [0,1,2,3,4], 35: [4,3,2,1,0], 65: [0,1,2,3,4], 95: [4,3,2,1,0], 125: [0,1,2,3,4], 155: [4,3,2,1,0], 185: [0,1,2,3,4], 215: [4,3,2,1,0],
+    6: [0,1,2,3,4], 36: [4,3,2,1,0], 66: [0,1,2,3,4], 96: [4,3,2,1,0], 126: [0,1,2,3,4], 156: [4,3,2,1,0], 186: [0,1,2,3,4], 216: [4,3,2,1,0],
+    7: [4,3,2,1,0], 37: [0,1,2,3,4], 67: [4,3,2,1,0], 97: [0,1,2,3,4], 127: [4,3,2,1,0], 157: [0,1,2,3,4], 187: [4,3,2,1,0], 217: [0,1,2,3,4],
+    8: [4,3,2,1,0], 38: [0,1,2,3,4], 68: [4,3,2,1,0], 98: [0,1,2,3,4], 128: [4,3,2,1,0], 158: [0,1,2,3,4], 188: [4,3,2,1,0], 218: [0,1,2,3,4],
+    9: [0,1,2,3,4], 39: [4,3,2,1,0], 69: [0,1,2,3,4], 99: [4,3,2,1,0], 129: [0,1,2,3,4], 159: [4,3,2,1,0], 189: [0,1,2,3,4], 219: [4,3,2,1,0],
+    10: [4,3,2,1,0], 40: [0,1,2,3,4], 70: [4,3,2,1,0], 100: [0,1,2,3,4], 130: [4,3,2,1,0], 160: [0,1,2,3,4], 190: [4,3,2,1,0], 220: [0,1,2,3,4],
+    11: [4,3,2,1,0], 41: [0,1,2,3,4], 71: [4,3,2,1,0], 101: [0,1,2,3,4], 131: [4,3,2,1,0], 161: [0,1,2,3,4], 191: [4,3,2,1,0], 221: [0,1,2,3,4],
+    12: [0,1,2,3,4], 42: [4,3,2,1,0], 72: [0,1,2,3,4], 102: [4,3,2,1,0], 132: [0,1,2,3,4], 162: [4,3,2,1,0], 192: [0,1,2,3,4], 222: [4,3,2,1,0],
+    13: [0,1,2,3,4], 43: [4,3,2,1,0], 73: [0,1,2,3,4], 103: [4,3,2,1,0], 133: [0,1,2,3,4], 163: [4,3,2,1,0], 193: [0,1,2,3,4], 223: [4,3,2,1,0],
+    14: [4,3,2,1,0], 44: [0,1,2,3,4], 74: [4,3,2,1,0], 104: [0,1,2,3,4], 134: [4,3,2,1,0], 164: [0,1,2,3,4], 194: [4,3,2,1,0], 224: [0,1,2,3,4],
+    15: [0,1,2,3,4], 45: [4,3,2,1,0], 75: [0,1,2,3,4], 105: [4,3,2,1,0], 135: [0,1,2,3,4], 165: [4,3,2,1,0], 195: [0,1,2,3,4], 225: [4,3,2,1,0],
+    16: [0,1,2,3,4], 46: [4,3,2,1,0], 76: [0,1,2,3,4], 106: [4,3,2,1,0], 136: [0,1,2,3,4], 166: [4,3,2,1,0], 196: [0,1,2,3,4], 226: [4,3,2,1,0],
+    17: [4,3,2,1,0], 47: [0,1,2,3,4], 77: [4,3,2,1,0], 107: [0,1,2,3,4], 137: [4,3,2,1,0], 167: [0,1,2,3,4], 197: [4,3,2,1,0], 227: [0,1,2,3,4],
+    18: [4,3,2,1,0], 48: [0,1,2,3,4], 78: [4,3,2,1,0], 108: [0,1,2,3,4], 138: [4,3,2,1,0], 168: [0,1,2,3,4], 198: [4,3,2,1,0], 228: [0,1,2,3,4],
+    19: [0,1,2,3,4], 49: [4,3,2,1,0], 79: [0,1,2,3,4], 109: [4,3,2,1,0], 139: [0,1,2,3,4], 169: [4,3,2,1,0], 199: [0,1,2,3,4], 229: [4,3,2,1,0],
+    20: [4,3,2,1,0], 50: [0,1,2,3,4], 80: [4,3,2,1,0], 110: [0,1,2,3,4], 140: [4,3,2,1,0], 170: [0,1,2,3,4], 200: [4,3,2,1,0], 230: [0,1,2,3,4],
+    21: [4,3,2,1,0], 51: [0,1,2,3,4], 81: [4,3,2,1,0], 111: [0,1,2,3,4], 141: [4,3,2,1,0], 171: [0,1,2,3,4], 201: [4,3,2,1,0], 231: [0,1,2,3,4],
+    22: [0,1,2,3,4], 52: [4,3,2,1,0], 82: [0,1,2,3,4], 112: [4,3,2,1,0], 142: [0,1,2,3,4], 172: [4,3,2,1,0], 202: [0,1,2,3,4], 232: [4,3,2,1,0],
+    23: [0,1,2,3,4], 53: [4,3,2,1,0], 83: [0,1,2,3,4], 113: [4,3,2,1,0], 143: [0,1,2,3,4], 173: [4,3,2,1,0], 203: [0,1,2,3,4], 233: [4,3,2,1,0],
+    24: [4,3,2,1,0], 54: [0,1,2,3,4], 84: [4,3,2,1,0], 114: [0,1,2,3,4], 144: [4,3,2,1,0], 174: [0,1,2,3,4], 204: [4,3,2,1,0], 234: [0,1,2,3,4],
+    25: [0,1,2,3,4], 55: [4,3,2,1,0], 85: [0,1,2,3,4], 115: [4,3,2,1,0], 145: [0,1,2,3,4], 175: [4,3,2,1,0], 205: [0,1,2,3,4], 235: [4,3,2,1,0],
+    26: [0,1,2,3,4], 56: [4,3,2,1,0], 86: [0,1,2,3,4], 116: [4,3,2,1,0], 146: [0,1,2,3,4], 176: [4,3,2,1,0], 206: [0,1,2,3,4], 236: [4,3,2,1,0],
+    27: [4,3,2,1,0], 57: [0,1,2,3,4], 87: [4,3,2,1,0], 117: [0,1,2,3,4], 147: [4,3,2,1,0], 177: [0,1,2,3,4], 207: [4,3,2,1,0], 237: [0,1,2,3,4],
+    28: [4,3,2,1,0], 58: [0,1,2,3,4], 88: [4,3,2,1,0], 118: [0,1,2,3,4], 148: [4,3,2,1,0], 178: [0,1,2,3,4], 208: [4,3,2,1,0], 238: [0,1,2,3,4],
+    29: [0,1,2,3,4], 59: [4,3,2,1,0], 89: [0,1,2,3,4], 119: [4,3,2,1,0], 149: [0,1,2,3,4], 179: [4,3,2,1,0], 209: [0,1,2,3,4], 239: [4,3,2,1,0],
+    30: [4,3,2,1,0], 60: [0,1,2,3,4], 90: [4,3,2,1,0], 120: [0,1,2,3,4], 150: [4,3,2,1,0], 180: [0,1,2,3,4], 210: [4,3,2,1,0], 240: [0,1,2,3,4]
 }
 
-# 1.2) item_to_facette : dict[int] -> str (N1..C6)
+# ====================== ITEM -> FACETTE (COMPLET 1..240) ======================
 item_to_facette: Dict[int, str] = {
-    # >>> COLLE ICI TON item_to_facette COMPLET (1..240) <<<
+    1: 'N1', 31: 'N1', 61: 'N1', 91: 'N1', 121: 'N1', 151: 'N1', 181: 'N1', 211: 'N1',
+    6: 'N2', 36: 'N2', 66: 'N2', 96: 'N2', 126: 'N2', 156: 'N2', 186: 'N2', 216: 'N2',
+    11: 'N3', 41: 'N3', 71: 'N3', 101: 'N3', 131: 'N3', 161: 'N3', 191: 'N3', 221: 'N3',
+    16: 'N4', 46: 'N4', 76: 'N4', 106: 'N4', 136: 'N4', 166: 'N4', 196: 'N4', 226: 'N4',
+    21: 'N5', 51: 'N5', 81: 'N5', 111: 'N5', 141: 'N5', 171: 'N5', 201: 'N5', 231: 'N5',
+    26: 'N6', 56: 'N6', 86: 'N6', 116: 'N6', 146: 'N6', 176: 'N6', 206: 'N6', 236: 'N6',
+
+    2: 'E1', 32: 'E1', 62: 'E1', 92: 'E1', 122: 'E1', 152: 'E1', 182: 'E1', 212: 'E1',
+    7: 'E2', 37: 'E2', 67: 'E2', 97: 'E2', 127: 'E2', 157: 'E2', 187: 'E2', 217: 'E2',
+    12: 'E3', 42: 'E3', 72: 'E3', 102: 'E3', 132: 'E3', 162: 'E3', 192: 'E3', 222: 'E3',
+    17: 'E4', 47: 'E4', 77: 'E4', 107: 'E4', 137: 'E4', 167: 'E4', 197: 'E4', 227: 'E4',
+    22: 'E5', 52: 'E5', 82: 'E5', 112: 'E5', 142: 'E5', 172: 'E5', 202: 'E5', 232: 'E5',
+    27: 'E6', 57: 'E6', 87: 'E6', 117: 'E6', 147: 'E6', 177: 'E6', 207: 'E6', 237: 'E6',
+
+    3: 'O1', 33: 'O1', 63: 'O1', 93: 'O1', 123: 'O1', 153: 'O1', 183: 'O1', 213: 'O1',
+    8: 'O2', 38: 'O2', 68: 'O2', 98: 'O2', 128: 'O2', 158: 'O2', 188: 'O2', 218: 'O2',
+    13: 'O3', 43: 'O3', 73: 'O3', 103: 'O3', 133: 'O3', 163: 'O3', 193: 'O3', 223: 'O3',
+    18: 'O4', 48: 'O4', 78: 'O4', 108: 'O4', 138: 'O4', 168: 'O4', 198: 'O4', 228: 'O4',
+    23: 'O5', 53: 'O5', 83: 'O5', 113: 'O5', 143: 'O5', 173: 'O5', 203: 'O5', 233: 'O5',
+    28: 'O6', 58: 'O6', 88: 'O6', 118: 'O6', 148: 'O6', 178: 'O6', 208: 'O6', 238: 'O6',
+
+    4: 'A1', 34: 'A1', 64: 'A1', 94: 'A1', 124: 'A1', 154: 'A1', 184: 'A1', 214: 'A1',
+    9: 'A2', 39: 'A2', 69: 'A2', 99: 'A2', 129: 'A2', 159: 'A2', 189: 'A2', 219: 'A2',
+    14: 'A3', 44: 'A3', 74: 'A3', 104: 'A3', 134: 'A3', 164: 'A3', 194: 'A3', 224: 'A3',
+    19: 'A4', 49: 'A4', 79: 'A4', 109: 'A4', 139: 'A4', 169: 'A4', 199: 'A4', 229: 'A4',
+    24: 'A5', 54: 'A5', 84: 'A5', 114: 'A5', 144: 'A5', 174: 'A5', 204: 'A5', 234: 'A5',
+    29: 'A6', 59: 'A6', 89: 'A6', 119: 'A6', 149: 'A6', 179: 'A6', 209: 'A6', 239: 'A6',
+
+    5: 'C1', 35: 'C1', 65: 'C1', 95: 'C1', 125: 'C1', 155: 'C1', 185: 'C1', 215: 'C1',
+    10: 'C2', 40: 'C2', 70: 'C2', 100: 'C2', 130: 'C2', 160: 'C2', 190: 'C2', 220: 'C2',
+    15: 'C3', 45: 'C3', 75: 'C3', 105: 'C3', 135: 'C3', 165: 'C3', 195: 'C3', 225: 'C3',
+    20: 'C4', 50: 'C4', 80: 'C4', 110: 'C4', 140: 'C4', 170: 'C4', 200: 'C4', 230: 'C4',
+    25: 'C5', 55: 'C5', 85: 'C5', 115: 'C5', 145: 'C5', 175: 'C5', 205: 'C5', 235: 'C5',
+    30: 'C6', 60: 'C6', 90: 'C6', 120: 'C6', 150: 'C6', 180: 'C6', 210: 'C6', 240: 'C6'
 }
 
 facettes_to_domain = {
@@ -84,6 +104,39 @@ facettes_to_domain = {
     'C1': 'C', 'C2': 'C', 'C3': 'C', 'C4': 'C', 'C5': 'C', 'C6': 'C'
 }
 
+facette_labels = {
+    'N1': 'N1 - Anxiété',
+    'N2': 'N2 - Hostilité colérique',
+    'N3': 'N3 - Dépression',
+    'N4': 'N4 - Timidité',
+    'N5': 'N5 - Impulsivité',
+    'N6': 'N6 - Vulnérabilité',
+    'E1': 'E1 - Chaleur',
+    'E2': 'E2 - Grégarité',
+    'E3': 'E3 - Affirmation de soi',
+    'E4': 'E4 - Activité',
+    'E5': "E5 - Recherche d'excitation",
+    'E6': 'E6 - Émotions positives',
+    'O1': 'O1 - Imagination',
+    'O2': 'O2 - Esthétique',
+    'O3': 'O3 - Sentiments',
+    'O4': 'O4 - Actions',
+    'O5': 'O5 - Idées',
+    'O6': 'O6 - Valeurs',
+    'A1': 'A1 - Confiance',
+    'A2': 'A2 - Franchise',
+    'A3': 'A3 - Altruisme',
+    'A4': 'A4 - Compliance',
+    'A5': 'A5 - Modestie',
+    'A6': 'A6 - Tendresse',
+    'C1': 'C1 - Compétence',
+    'C2': 'C2 - Ordre',
+    'C3': 'C3 - Sens du devoir',
+    'C4': 'C4 - Effort pour réussir',
+    'C5': 'C5 - Autodiscipline',
+    'C6': 'C6 - Délibération'
+}
+
 domain_labels = {
     'N': 'Névrosisme',
     'E': 'Extraversion',
@@ -92,18 +145,15 @@ domain_labels = {
     'C': 'Conscience'
 }
 
-# (Optionnel) libellés si tu veux afficher facettes plus tard
-# Tu peux coller tes labels ici si besoin, sinon ça marche sans.
-facette_labels = {k: k for k in facettes_to_domain.keys()}
+CHOICES = ["FD", "D", "N", "A", "FA"]  # indices 0..4
 
-ChoiceLabels = ["FD", "D", "N", "A", "FA"]  # index 0..4
 
-# ============================================================
-# 2) PARAMÈTRES
-# ============================================================
-
+# ==============================
+# CONFIGS
+# ==============================
 @dataclass
 class OMRConfig:
+    # zone globale de la grille (ratios sur la feuille redressée)
     grid_left: float = 0.05
     grid_right: float = 0.95
     grid_top: float = 0.205
@@ -112,23 +162,31 @@ class OMRConfig:
     rows: int = 30
     cols: int = 8
 
-    option_centers: Tuple[float, float, float, float, float] = (0.12, 0.32, 0.52, 0.72, 0.90)
-    box_w_ratio: float = 0.16
-    box_h_ratio: float = 0.60
+    # centres relatifs des 5 lettres dans une case (FD D N A FA)
+    option_centers: Tuple[float, float, float, float, float] = (0.14, 0.34, 0.54, 0.74, 0.92)
 
+    # taille ROI dans une case (en ratio de la cellule)
+    box_w_ratio: float = 0.18
+    box_h_ratio: float = 0.62
+
+    # seuil auto (encre)
     auto_threshold_factor: float = 1.8
-    auto_threshold_floor: int = 300
+    auto_threshold_floor: int = 280
 
+    # détecter vide + ambigu + faible
+    blank_detect_margin: float = 0.92
     ambiguity_rel_gap: float = 0.12
     weak_rel_margin: float = 1.35
 
+    # imputation
     impute_blank_to_N: bool = True
+
 
 @dataclass
 class ValidityConfig:
     blank_invalid_threshold: int = 15
     neutral_invalid_threshold: int = 42
-    max_ambiguities_quality_gate: int = 30
+
 
 @dataclass
 class OMRStats:
@@ -143,62 +201,25 @@ class OMRStats:
     ink_p10: int
     ink_p90: int
 
-# ============================================================
-# 3) AUDITS
-# ============================================================
 
-def audit_scoring_key(sk: Dict[int, List[int]]) -> List[str]:
-    errs: List[str] = []
-    if len(sk) != 240:
-        errs.append(f"scoring_key: nombre d'items = {len(sk)} (attendu 240).")
-
-    for item_id in range(1, 241):
-        if item_id not in sk:
-            errs.append(f"scoring_key: item manquant {item_id}.")
-            continue
-        v = sk[item_id]
-        if not isinstance(v, list) or len(v) != 5:
-            errs.append(f"scoring_key: item {item_id} doit contenir 5 valeurs, reçu: {v}.")
-            continue
-        if v not in ([4,3,2,1,0], [0,1,2,3,4]):
-            errs.append(f"scoring_key: item {item_id} pattern invalide {v}.")
-        if v[2] != 2:
-            errs.append(f"scoring_key: item {item_id} valeur N != 2 (reçu {v[2]}).")
-    return errs
-
-def audit_item_to_facette(m: Dict[int, str]) -> List[str]:
-    errs: List[str] = []
-    if len(m) != 240:
-        errs.append(f"item_to_facette: nombre d'items = {len(m)} (attendu 240).")
-
-    for item_id in range(1, 241):
-        if item_id not in m:
-            errs.append(f"item_to_facette: item manquant {item_id}.")
-            continue
-        fac = m[item_id]
-        if fac not in facettes_to_domain:
-            errs.append(f"item_to_facette: item {item_id} facette invalide '{fac}'.")
-    return errs
-
-# ============================================================
-# 4) IMAGE PIPELINE ROBUSTE SMARTPHONE
-# ============================================================
-
+# ==============================
+# IMAGE PIPELINE (smartphone)
+# ==============================
 def pil_to_bgr(pil_img: Image.Image) -> np.ndarray:
     img_rgb = pil_img.convert("RGB")
     return cv2.cvtColor(np.array(img_rgb), cv2.COLOR_RGB2BGR)
 
 def remove_shadows(gray: np.ndarray) -> np.ndarray:
-    dilated = cv2.dilate(gray, np.ones((7, 7), np.uint8))
-    bg = cv2.medianBlur(dilated, 21)
+    dil = cv2.dilate(gray, np.ones((7, 7), np.uint8))
+    bg = cv2.medianBlur(dil, 21)
     diff = 255 - cv2.absdiff(gray, bg)
-    norm = cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX)
-    return norm
+    return cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX)
 
 def find_document_and_warp(img_bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray, bool]:
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edged = cv2.Canny(blurred, 75, 200)
+
     cnts = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cnts = imutils.grab_contours(cnts)
 
@@ -213,10 +234,10 @@ def find_document_and_warp(img_bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray,
                 break
 
     if doc is None:
-        return img_bgr.copy(), gray.copy(), False
+        return img_bgr.copy(), cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY), False
 
     paper = four_point_transform(img_bgr, doc.reshape(4, 2))
-    warped_gray = four_point_transform(gray, doc.reshape(4, 2))
+    warped_gray = four_point_transform(cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY), doc.reshape(4, 2))
     return paper, warped_gray, True
 
 def robust_threshold(gray: np.ndarray) -> np.ndarray:
@@ -234,20 +255,18 @@ def robust_threshold(gray: np.ndarray) -> np.ndarray:
 
 def normalize_width(gray: np.ndarray, thr: np.ndarray, target_w: int = 1700) -> Tuple[np.ndarray, np.ndarray]:
     H, W = gray.shape[:2]
-    if W <= 0:
-        raise ValueError("Image invalide (largeur nulle).")
     scale = target_w / float(W)
     new_size = (target_w, max(1, int(H * scale)))
     return cv2.resize(gray, new_size), cv2.resize(thr, new_size)
 
-# ============================================================
-# 5) OMR — EXTRACTION INK PAR ROI
-# ============================================================
 
+# ==============================
+# OMR ROIs (lettres)
+# ==============================
 def extract_inks(thr: np.ndarray, cfg: OMRConfig):
     H, W = thr.shape[:2]
-    x0 = int(cfg.grid_left * W);  x1 = int(cfg.grid_right * W)
-    y0 = int(cfg.grid_top * H);   y1 = int(cfg.grid_bottom * H)
+    x0 = int(cfg.grid_left * W); x1 = int(cfg.grid_right * W)
+    y0 = int(cfg.grid_top * H);  y1 = int(cfg.grid_bottom * H)
 
     x0 = max(0, min(W - 2, x0)); x1 = max(x0 + 1, min(W - 1, x1))
     y0 = max(0, min(H - 2, y0)); y1 = max(y0 + 1, min(H - 1, y1))
@@ -281,6 +300,7 @@ def extract_inks(thr: np.ndarray, cfg: OMRConfig):
 
                 roi = thr[by2:by2 + bh, bx:bx + bw]
                 ink = int(cv2.countNonZero(roi))
+
                 inks.append(ink)
                 all_inks.append(ink)
                 rois.append((bx, by2, bw, bh))
@@ -291,9 +311,6 @@ def extract_inks(thr: np.ndarray, cfg: OMRConfig):
 
 def auto_threshold_from_inks(all_inks: List[int], cfg: OMRConfig) -> Tuple[int, int, int, int]:
     v = np.array(all_inks, dtype=np.float32)
-    if v.size < 100:
-        thr = 1200
-        return thr, int(np.median(v)) if v.size else 0, 0, 0
     med = int(np.median(v))
     p10 = int(np.percentile(v, 10))
     p90 = int(np.percentile(v, 90))
@@ -302,6 +319,7 @@ def auto_threshold_from_inks(all_inks: List[int], cfg: OMRConfig) -> Tuple[int, 
 
 def decide_responses(raw_items, thr_img: np.ndarray, cfg: OMRConfig, thr_ink: int, overlay: bool):
     responses: Dict[int, int] = {}
+    mark_state: Dict[int, str] = {}  # marked / blank_imputed / blank_unimputed
     warnings: List[str] = []
 
     blank = 0
@@ -311,9 +329,11 @@ def decide_responses(raw_items, thr_img: np.ndarray, cfg: OMRConfig, thr_ink: in
     neutral_imputed = 0
 
     ov = cv2.cvtColor(thr_img.copy(), cv2.COLOR_GRAY2BGR) if overlay else None
+    blank_thr = int(thr_ink * cfg.blank_detect_margin)
 
     for (r, c, inks, rois) in raw_items:
         item_id = (r + 1) + 30 * c
+
         best_idx = int(np.argmax(inks))
         sorted_inks = sorted(inks, reverse=True)
         best_ink = int(sorted_inks[0])
@@ -322,17 +342,22 @@ def decide_responses(raw_items, thr_img: np.ndarray, cfg: OMRConfig, thr_ink: in
         if sorted_inks[0] > 0:
             rel_gap = (sorted_inks[0] - sorted_inks[1]) / float(sorted_inks[0])
 
-        if best_ink < thr_ink:
+        # BLANK
+        if best_ink < blank_thr:
             blank += 1
             if cfg.impute_blank_to_N:
-                responses[item_id] = 2
+                responses[item_id] = 2  # N
                 neutral_imputed += 1
+                mark_state[item_id] = "blank_imputed"
                 warnings.append(f"Item {item_id}: non répondu → imputé à N.")
             else:
                 responses[item_id] = best_idx
+                mark_state[item_id] = "blank_unimputed"
                 warnings.append(f"Item {item_id}: non répondu.")
         else:
             responses[item_id] = best_idx
+            mark_state[item_id] = "marked"
+
             if best_idx == 2:
                 neutral_marked += 1
 
@@ -347,7 +372,7 @@ def decide_responses(raw_items, thr_img: np.ndarray, cfg: OMRConfig, thr_ink: in
         if ov is not None:
             chosen = responses[item_id]
             for j, (bx, by, bw, bh) in enumerate(rois):
-                col = (0, 255, 0) if j == chosen else (180, 180, 180)
+                col = (0, 200, 0) if j == chosen else (170, 170, 170)
                 cv2.rectangle(ov, (bx, by), (bx + bw, by + bh), col, 1)
 
     stats = OMRStats(
@@ -362,79 +387,48 @@ def decide_responses(raw_items, thr_img: np.ndarray, cfg: OMRConfig, thr_ink: in
         ink_p10=0,
         ink_p90=0
     )
+    return responses, mark_state, warnings, stats, ov
 
-    return responses, warnings, stats, ov
 
-# ============================================================
-# 6) SCORING + VALIDITÉ
-# ============================================================
-
-def calculate_scores(responses: Dict[int, int]) -> Tuple[Dict[str,int], Dict[str,int]]:
-    fac_scores: Dict[str, int] = {fac: 0 for fac in facettes_to_domain.keys()}
-
-    for item_id, opt in responses.items():
-        if item_id in scoring_key and item_id in item_to_facette:
-            fac = item_to_facette[item_id]
-            fac_scores[fac] += scoring_key[item_id][opt]
-
-    dom_scores: Dict[str, int] = {d: 0 for d in domain_labels.keys()}
-    for fac, sc in fac_scores.items():
-        dom = facettes_to_domain.get(fac)
-        if dom:
-            dom_scores[dom] += sc
-
-    return fac_scores, dom_scores
-
-def protocol_validity(stats: OMRStats, responses: Dict[int,int], vcfg: ValidityConfig) -> Tuple[bool, List[str], int]:
+# ==============================
+# VALIDITÉ + SCORING
+# ==============================
+def protocol_validity(stats: OMRStats, vcfg: ValidityConfig) -> Tuple[bool, List[str]]:
     reasons: List[str] = []
     if stats.blank_count >= vcfg.blank_invalid_threshold:
         reasons.append(f"Items non répondus: {stats.blank_count} (seuil ≥ {vcfg.blank_invalid_threshold}).")
+    if stats.neutral_marked_count >= vcfg.neutral_invalid_threshold:
+        reasons.append(f"Réponses N cochées: {stats.neutral_marked_count} (seuil ≥ {vcfg.neutral_invalid_threshold}).")
+    return (len(reasons) == 0), reasons
 
-    neutral_total = sum(1 for _, v in responses.items() if v == 2)
-    if neutral_total >= vcfg.neutral_invalid_threshold:
-        reasons.append(f"Réponses N totales: {neutral_total} (seuil ≥ {vcfg.neutral_invalid_threshold}).")
+def calculate_scores(responses: Dict[int, int]) -> Tuple[Dict[str,int], Dict[str,int]]:
+    fac_scores: Dict[str, int] = {fac: 0 for fac in facette_labels.keys()}
+    for item_id, opt in responses.items():
+        fac = item_to_facette[item_id]
+        fac_scores[fac] += scoring_key[item_id][opt]
 
-    if stats.ambiguous_count > vcfg.max_ambiguities_quality_gate:
-        reasons.append(f"Qualité faible: ambiguïtés={stats.ambiguous_count} (seuil > {vcfg.max_ambiguities_quality_gate}).")
+    dom_scores: Dict[str, int] = {d: 0 for d in domain_labels.keys()}
+    for fac, sc in fac_scores.items():
+        dom_scores[facettes_to_domain[fac]] += sc
+    return fac_scores, dom_scores
 
-    return (len(reasons) == 0), reasons, neutral_total
 
-def response_style(responses: Dict[int,int]) -> Dict[str, float]:
-    counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
-    for _, idx in responses.items():
-        counts[idx] += 1
-    total = max(1, sum(counts.values()))
-    return {
-        "FD": counts[0], "D": counts[1], "N": counts[2], "A": counts[3], "FA": counts[4],
-        "FD%": 100*counts[0]/total,
-        "D%": 100*counts[1]/total,
-        "N%": 100*counts[2]/total,
-        "A%": 100*counts[3]/total,
-        "FA%": 100*counts[4]/total,
-        "Extrêmes (FD+FA)": counts[0] + counts[4],
-        "Acquiescence (A+FA)": counts[3] + counts[4],
-    }
-
-# ============================================================
-# 7) EXPORTS
-# ============================================================
-
-def export_csv(fac_scores: Dict[str,int], dom_scores: Dict[str,int], style: Dict[str,float], stats: OMRStats, valid: bool, reasons: List[str], neutral_total: int) -> str:
+# ==============================
+# EXPORTS
+# ==============================
+def export_csv(valid: bool, reasons: List[str], stats: OMRStats, fac_scores: Dict[str,int], dom_scores: Dict[str,int]) -> str:
     out = io.StringIO()
     w = csv.writer(out)
-
     w.writerow(["SECTION", "LIBELLÉ", "VALEUR"])
     w.writerow(["VALIDITÉ", "Protocole", "VALIDE" if valid else "INVALIDE"])
-    if reasons:
-        for r in reasons:
-            w.writerow(["VALIDITÉ", "Raison", r])
+    for r in reasons:
+        w.writerow(["VALIDITÉ", "Raison", r])
 
     w.writerow([])
     w.writerow(["QUALITÉ", "Seuil encrage (auto)", stats.threshold_ink])
     w.writerow(["QUALITÉ", "Items vides", stats.blank_count])
     w.writerow(["QUALITÉ", "Ambiguïtés", stats.ambiguous_count])
     w.writerow(["QUALITÉ", "Marquages faibles", stats.weak_mark_count])
-    w.writerow(["QUALITÉ", "N total", neutral_total])
     w.writerow(["QUALITÉ", "N cochés", stats.neutral_marked_count])
     w.writerow(["QUALITÉ", "N imputés", stats.neutral_imputed_count])
 
@@ -448,22 +442,16 @@ def export_csv(fac_scores: Dict[str,int], dom_scores: Dict[str,int], style: Dict
     for fac in sorted(fac_scores.keys()):
         w.writerow(["FACETTES", facette_labels.get(fac, fac), fac_scores[fac]])
 
-    w.writerow([])
-    w.writerow(["STYLE", "Indice", "Valeur"])
-    for k, v in style.items():
-        w.writerow(["STYLE", k, v])
-
     return out.getvalue()
 
-def export_txt(valid: bool, reasons: List[str], fac_scores: Dict[str,int], dom_scores: Dict[str,int], style: Dict[str,float], stats: OMRStats, neutral_total: int) -> str:
-    lines: List[str] = []
-    lines.append("RAPPORT NEO PI-R — OMR CLINIQUE (SMARTPHONE)")
+def export_txt(valid: bool, reasons: List[str], stats: OMRStats, fac_scores: Dict[str,int], dom_scores: Dict[str,int]) -> str:
+    lines = []
+    lines.append("RAPPORT NEO PI-R — OMR CLINIQUE (FEUILLE SANS BULLES)")
     lines.append("")
     lines.append("VALIDITÉ")
     lines.append("VALIDE" if valid else "INVALIDE")
-    if reasons:
-        for r in reasons:
-            lines.append(f"- {r}")
+    for r in reasons:
+        lines.append(f"- {r}")
 
     lines.append("")
     lines.append("QUALITÉ DE LECTURE")
@@ -471,94 +459,81 @@ def export_txt(valid: bool, reasons: List[str], fac_scores: Dict[str,int], dom_s
     lines.append(f"Items vides: {stats.blank_count}/{stats.total_items}")
     lines.append(f"Ambiguïtés: {stats.ambiguous_count}")
     lines.append(f"Marquages faibles: {stats.weak_mark_count}")
-    lines.append(f"N total: {neutral_total} (cochés={stats.neutral_marked_count}, imputés={stats.neutral_imputed_count})")
+    lines.append(f"N cochés: {stats.neutral_marked_count}")
+    lines.append(f"N imputés: {stats.neutral_imputed_count}")
 
     lines.append("")
-    lines.append("STYLE DE RÉPONSE (DESCRIPTIF)")
-    for k, v in style.items():
-        lines.append(f"{k}: {v}")
-
-    lines.append("")
-    lines.append("TOTAUX DOMAINES (BRUT)")
+    lines.append("DOMAINES (scores bruts)")
     for d in sorted(dom_scores.keys()):
         lines.append(f"{domain_labels[d]}: {dom_scores[d]}")
 
     lines.append("")
-    lines.append("SCORES FACETTES (BRUT)")
+    lines.append("FACETTES (scores bruts)")
     for fac in sorted(fac_scores.keys()):
         lines.append(f"{facette_labels.get(fac, fac)}: {fac_scores[fac]}")
 
     return "\n".join(lines)
 
-# ============================================================
-# 8) UI
-# ============================================================
 
-st.title("NEO PI-R — OMR Clinique (Smartphone)")
-st.caption("Lecture robuste d'une photo caméra — réponses FD/D/N/A/FA entourées — scoring via clé (items directs/inversés).")
+# ==============================
+# UI
+# ==============================
+st.set_page_config(page_title="NEO PI-R — OMR Clinique", page_icon="📄", layout="wide")
+
+st.markdown(
+    """
+    <style>
+      .block-container { padding-top: 1.2rem; padding-bottom: 2rem; max-width: 1400px; }
+      div.stButton > button { width: 100%; border-radius: 10px; padding: 0.75rem 1rem; font-weight: 650; }
+      .card { border: 1px solid rgba(49, 51, 63, 0.14); border-radius: 14px; padding: 14px 16px; background: rgba(255,255,255,0.65); }
+      .label { font-size: 12px; color: rgba(49, 51, 63, 0.65); margin-bottom: 4px; }
+      .value { font-size: 22px; font-weight: 800; }
+      .sub { font-size: 12px; color: rgba(49, 51, 63, 0.65); margin-top: 4px; }
+      .footer { text-align:center; color: rgba(49,51,63,0.55); font-size: 12px; padding-top: 16px; }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
+
+st.title("NEO PI-R — OMR Clinique (Feuille sans bulles)")
+st.caption("Lecture photo smartphone (lettres FD/D/N/A/FA entourées) + Validité automatique + Scoring brut.")
 
 with st.sidebar:
-    st.markdown("## Paramètres (calibration)")
+    st.markdown("## Calibration (si nécessaire)")
     cfg = OMRConfig(
         grid_left=st.slider("Grille — gauche", 0.00, 0.20, 0.05, 0.005),
         grid_right=st.slider("Grille — droite", 0.80, 1.00, 0.95, 0.005),
         grid_top=st.slider("Grille — haut", 0.10, 0.35, 0.205, 0.005),
         grid_bottom=st.slider("Grille — bas", 0.70, 0.95, 0.86, 0.005),
-        impute_blank_to_N=st.toggle("Imputer item vide à N (2 points)", value=True),
+        impute_blank_to_N=st.toggle("Imputer item vide → N (2 points)", value=True),
     )
     cfg.auto_threshold_factor = st.slider("Auto-seuil (facteur)", 1.2, 3.0, 1.8, 0.05)
+    cfg.blank_detect_margin = st.slider("Détection vide (marge)", 0.70, 1.10, 0.92, 0.01)
     cfg.ambiguity_rel_gap = st.slider("Ambiguïté (gap relatif)", 0.02, 0.40, 0.12, 0.01)
     cfg.weak_rel_margin = st.slider("Marquage faible (marge)", 1.05, 2.00, 1.35, 0.05)
 
     st.markdown("---")
-    st.markdown("## Validité protocolaire")
+    st.markdown("## Règles validité")
     vcfg = ValidityConfig(
         blank_invalid_threshold=st.number_input("Invalide si items vides ≥", 0, 240, 15, 1),
-        neutral_invalid_threshold=st.number_input("Invalide si N total ≥", 0, 240, 42, 1),
-        max_ambiguities_quality_gate=st.number_input("Garde qualité si ambiguïtés >", 0, 240, 30, 1),
+        neutral_invalid_threshold=st.number_input("Invalide si N cochés ≥", 0, 240, 42, 1),
     )
 
     st.markdown("---")
-    show_overlay = st.toggle("Afficher overlay ROI", value=False)
-    show_audit = st.toggle("Afficher audit tables", value=True)
+    show_overlay = st.toggle("Afficher overlay ROIs", value=False)
 
-# Audit tables
-if show_audit:
-    errs = []
-    if not scoring_key:
-        errs.append("scoring_key est vide (colle la table).")
-    if not item_to_facette:
-        errs.append("item_to_facette est vide (colle la table).")
-    if scoring_key:
-        errs.extend(audit_scoring_key(scoring_key))
-    if item_to_facette:
-        errs.extend(audit_item_to_facette(item_to_facette))
-
-    with st.expander("Audit tables (intégrité)", expanded=True):
-        if errs:
-            st.error("Tables non conformes. Corrige avant usage.")
-            st.code("\n".join(errs[:300]), language="text")
-            if len(errs) > 300:
-                st.info(f"{len(errs)} erreurs au total. Affichage limité.")
-        else:
-            st.success("Tables OK (240 items, patterns valides, facettes valides).")
-
-uploaded = st.file_uploader("Importer la feuille (photo caméra JPG/PNG)", type=["jpg", "jpeg", "png"])
+uploaded = st.file_uploader("Importer la feuille (JPG/PNG)", type=["jpg", "jpeg", "png"])
 
 if uploaded:
-    colA, colB = st.columns([0.7, 0.3], vertical_alignment="top")
-    with colA:
+    c1, c2 = st.columns([0.7, 0.3], vertical_alignment="top")
+    with c1:
         raw_img = Image.open(uploaded)
-        st.image(raw_img, caption="Image importée (brute)", use_container_width=True)
-    with colB:
+        st.image(raw_img, caption="Image importée", use_container_width=True)
+    with c2:
         run = st.button("Lancer l'analyse", type="primary")
 
     if run:
         try:
-            if not scoring_key or not item_to_facette:
-                st.error("Colle scoring_key et item_to_facette complets (1..240).")
-                st.stop()
-
             pil_img = Image.open(uploaded)
             img_bgr = pil_to_bgr(pil_img)
 
@@ -566,55 +541,60 @@ if uploaded:
             thr = robust_threshold(warped_gray)
             warped_gray, thr = normalize_width(warped_gray, thr, target_w=1700)
 
-            # OMR
             all_inks, raw_items = extract_inks(thr, cfg)
             thr_ink, med, p10, p90 = auto_threshold_from_inks(all_inks, cfg)
-            responses, warnings, stats, overlay = decide_responses(raw_items, thr, cfg, thr_ink, overlay=show_overlay)
 
+            responses, mark_state, warnings, stats, overlay = decide_responses(
+                raw_items, thr, cfg, thr_ink, overlay=show_overlay
+            )
             stats.ink_median = med
             stats.ink_p10 = p10
             stats.ink_p90 = p90
 
+            # validité
+            valid, reasons = protocol_validity(stats, vcfg)
+
             # scoring
             fac_scores, dom_scores = calculate_scores(responses)
 
-            # validité
-            valid, reasons, neutral_total = protocol_validity(stats, responses, vcfg)
-
-            # style
-            style = response_style(responses)
-
+            # KPIs
             response_rate = 100.0 * (1.0 - stats.blank_count / max(1, stats.total_items))
-            quality_proxy = max(0.0, 100.0 * (1.0 - (stats.ambiguous_count + 0.5 * stats.weak_mark_count) / max(1, stats.total_items)))
+            quality_proxy = max(
+                0.0,
+                100.0 * (1.0 - (stats.ambiguous_count + 0.5 * stats.weak_mark_count) / max(1, stats.total_items))
+            )
 
             st.markdown("### Résumé")
-
             k1, k2, k3, k4 = st.columns(4)
             k1.markdown(
-                f"<div class='card'><div class='label'>Validité</div><div class='value'>{'VALIDE' if valid else 'INVALIDE'}</div>"
-                f"<div class='sub'>Règles: vides ≥ {vcfg.blank_invalid_threshold} · N ≥ {vcfg.neutral_invalid_threshold}</div></div>",
+                f"<div class='card'><div class='label'>Validité</div>"
+                f"<div class='value'>{'VALIDE' if valid else 'INVALIDE'}</div>"
+                f"<div class='sub'>Règles: vides ≥ {vcfg.blank_invalid_threshold} · N cochés ≥ {vcfg.neutral_invalid_threshold}</div></div>",
                 unsafe_allow_html=True
             )
             k2.markdown(
-                f"<div class='card'><div class='label'>Taux de réponse</div><div class='value'>{response_rate:.1f}%</div>"
+                f"<div class='card'><div class='label'>Taux de réponse</div>"
+                f"<div class='value'>{response_rate:.1f}%</div>"
                 f"<div class='sub'>Vides: {stats.blank_count}/{stats.total_items}</div></div>",
                 unsafe_allow_html=True
             )
             k3.markdown(
-                f"<div class='card'><div class='label'>N total</div><div class='value'>{neutral_total}</div>"
-                f"<div class='sub'>Cochés: {stats.neutral_marked_count} · Imputés: {stats.neutral_imputed_count}</div></div>",
+                f"<div class='card'><div class='label'>N cochés</div>"
+                f"<div class='value'>{stats.neutral_marked_count}</div>"
+                f"<div class='sub'>N imputés: {stats.neutral_imputed_count}</div></div>",
                 unsafe_allow_html=True
             )
             k4.markdown(
-                f"<div class='card'><div class='label'>Qualité lecture</div><div class='value'>{quality_proxy:.1f}%</div>"
+                f"<div class='card'><div class='label'>Qualité lecture</div>"
+                f"<div class='value'>{quality_proxy:.1f}%</div>"
                 f"<div class='sub'>Ambiguïtés: {stats.ambiguous_count} · Faibles: {stats.weak_mark_count} · Seuil: {stats.threshold_ink}</div></div>",
                 unsafe_allow_html=True
             )
 
             if valid:
-                st.success("Protocole valide.")
+                st.success("✅ Protocole valide.")
             else:
-                st.error("Protocole invalide.")
+                st.error("❌ Protocole invalide.")
                 for r in reasons:
                     st.warning(r)
 
@@ -630,21 +610,19 @@ if uploaded:
                 st.dataframe(fac_table, use_container_width=True, hide_index=True)
 
             with tab2:
-                st.subheader("Qualité")
+                st.subheader("Contrôle technique")
                 st.write({
-                    "doc_detecté": doc_found,
+                    "document_detecté": doc_found,
                     "seuil_encrage_auto": stats.threshold_ink,
                     "ink_médian": stats.ink_median,
                     "ink_p10": stats.ink_p10,
                     "ink_p90": stats.ink_p90,
-                    "ambiguïtés": stats.ambiguous_count,
-                    "marquages_faibles": stats.weak_mark_count,
                 })
 
-                c1, c2 = st.columns(2)
-                with c1:
+                cc1, cc2 = st.columns(2)
+                with cc1:
                     st.image(paper_bgr, channels="BGR", caption="Feuille redressée (perspective)", use_container_width=True)
-                with c2:
+                with cc2:
                     st.image(thr, clamp=True, caption="Binarisation (encre = blanc)", use_container_width=True)
 
                 if show_overlay and overlay is not None:
@@ -654,22 +632,22 @@ if uploaded:
                 st.subheader("Avertissements")
                 if warnings:
                     with st.expander("Afficher", expanded=True):
-                        for w in warnings[:500]:
+                        for w in warnings[:600]:
                             st.warning(w)
-                    if len(warnings) > 500:
+                    if len(warnings) > 600:
                         st.info(f"{len(warnings)} avertissements. Affichage limité.")
                 else:
                     st.success("Aucun avertissement.")
 
             with tab4:
                 st.subheader("Exports")
-                csv_text = export_csv(fac_scores, dom_scores, style, stats, valid, reasons, neutral_total)
+                csv_text = export_csv(valid, reasons, stats, fac_scores, dom_scores)
                 st.download_button("Télécharger CSV", csv_text, file_name="neo_pir_export.csv", mime="text/csv")
 
-                txt_text = export_txt(valid, reasons, fac_scores, dom_scores, style, stats, neutral_total)
+                txt_text = export_txt(valid, reasons, stats, fac_scores, dom_scores)
                 st.download_button("Télécharger rapport TXT", txt_text, file_name="neo_pir_report.txt", mime="text/plain")
 
         except Exception as e:
             st.error(f"Erreur : {e}")
 
-st.markdown("<div class='footer'>NEO PI-R — OMR Clinique (Smartphone) · © 2026</div>", unsafe_allow_html=True)
+st.markdown("<div class='footer'>NEO PI-R — OMR Clinique · © 2026</div>", unsafe_allow_html=True)
