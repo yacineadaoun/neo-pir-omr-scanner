@@ -1,8 +1,13 @@
 # ============================================================
-# NEO PI-R — OMR Clinique (Smartphone) — SINGLE FILE
-# Lecture "lettres entourées" FD / D / N / A / FA
-# Scoring items directs/inversés via scoring_key
-# Validité: vides ≥ 15 ou N ≥ 42 => INVALIDE
+# NEO PI-R — OMR Clinique (Photo smartphone) — VERSION FINALE
+# ------------------------------------------------------------
+# ✅ Feuille SANS bulles (lettres FD / D / N / A / FA entourées)
+# ✅ Lecture robuste par ROIs (zones) + auto-seuil
+# ✅ Validité protocolaire :
+#     - Items vides ≥ 15  -> INVALIDE
+#     - N cochés ≥ 42     -> INVALIDE  (⚠️ uniquement N réellement cochés, pas les N imputés)
+# ✅ Imputation : item vide -> N (index 2) pour le scoring (donc 2 points via scoring_key)
+# ✅ Scoring OPTIONNEL : si scoring_key + item_to_facette fournis → scores facettes/domaines
 # ============================================================
 
 from __future__ import annotations
@@ -55,25 +60,33 @@ st.markdown(
         font-size: 12px;
         padding-top: 16px;
       }
+      .note {
+        border-left: 4px solid rgba(49, 51, 63, 0.25);
+        padding: 10px 12px;
+        background: rgba(49, 51, 63, 0.03);
+        border-radius: 8px;
+      }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
 # ============================================================
-# 1) TABLES — COLLE ICI TES 2 TABLES COMPLETES
+# 1) TABLES (OPTIONNELLES)
+# ------------------------------------------------------------
+# ➜ Tu peux laisser vides : l’app fera quand même OMR + VALIDITÉ
+# ➜ Si tu colles les tables complètes : l’app calculera les SCORES
 # ============================================================
 
-# 1.1) scoring_key : dict[int] -> list[5]
-#  - chaque item doit être [4,3,2,1,0] ou [0,1,2,3,4]
-#  - l'index 2 (N) doit être 2
+# scoring_key[item] = [score_FD, score_D, score_N, score_A, score_FA]
+# Doit être complet sur 1..240 pour activer le scoring.
 scoring_key: Dict[int, List[int]] = {
-    # >>> COLLE ICI TON scoring_key COMPLET (1..240) <<<
+    # 👉 COLLE ICI TON scoring_key COMPLET si tu veux les scores
 }
 
-# 1.2) item_to_facette : dict[int] -> str (N1..C6)
+# item_to_facette[item] = "N1".."C6"
 item_to_facette: Dict[int, str] = {
-    # >>> COLLE ICI TON item_to_facette COMPLET (1..240) <<<
+    # 👉 COLLE ICI TON item_to_facette COMPLET si tu veux les scores
 }
 
 facettes_to_domain = {
@@ -83,7 +96,6 @@ facettes_to_domain = {
     'A1': 'A', 'A2': 'A', 'A3': 'A', 'A4': 'A', 'A5': 'A', 'A6': 'A',
     'C1': 'C', 'C2': 'C', 'C3': 'C', 'C4': 'C', 'C5': 'C', 'C6': 'C'
 }
-
 domain_labels = {
     'N': 'Névrosisme',
     'E': 'Extraversion',
@@ -91,44 +103,51 @@ domain_labels = {
     'A': 'Agréabilité',
     'C': 'Conscience'
 }
-
-# (Optionnel) libellés si tu veux afficher facettes plus tard
-# Tu peux coller tes labels ici si besoin, sinon ça marche sans.
+# Facette labels optionnels (affichage)
 facette_labels = {k: k for k in facettes_to_domain.keys()}
 
 ChoiceLabels = ["FD", "D", "N", "A", "FA"]  # index 0..4
 
 # ============================================================
-# 2) PARAMÈTRES
+# 2) CONFIGS
 # ============================================================
 
 @dataclass
 class OMRConfig:
+    # zone globale de la grille (en ratios de la feuille redressée)
     grid_left: float = 0.05
     grid_right: float = 0.95
     grid_top: float = 0.205
     grid_bottom: float = 0.86
 
+    # structure de la feuille (240 items = 30 lignes x 8 colonnes)
     rows: int = 30
     cols: int = 8
 
-    option_centers: Tuple[float, float, float, float, float] = (0.12, 0.32, 0.52, 0.72, 0.90)
-    box_w_ratio: float = 0.16
-    box_h_ratio: float = 0.60
+    # positions relatives des 5 options dans une case
+    # (à ajuster si besoin, mais ces valeurs conviennent bien à la feuille standard)
+    option_centers: Tuple[float, float, float, float, float] = (0.14, 0.34, 0.54, 0.74, 0.92)
 
+    # taille des ROIs (boîtes) autour des lettres
+    box_w_ratio: float = 0.18
+    box_h_ratio: float = 0.62
+
+    # auto-seuil d’encre
     auto_threshold_factor: float = 1.8
-    auto_threshold_floor: int = 300
+    auto_threshold_floor: int = 280
 
+    # qualité
     ambiguity_rel_gap: float = 0.12
     weak_rel_margin: float = 1.35
 
-    impute_blank_to_N: bool = True
+    # comportement vide
+    impute_blank_to_N: bool = True  # vide -> N pour scoring (2 points via scoring_key)
+    blank_detect_margin: float = 0.92  # marge tolérée (évite de compter des micro-bruits)
 
 @dataclass
 class ValidityConfig:
     blank_invalid_threshold: int = 15
-    neutral_invalid_threshold: int = 42
-    max_ambiguities_quality_gate: int = 30
+    neutral_invalid_threshold: int = 42  # ⚠️ N réellement cochés (pas imputés)
 
 @dataclass
 class OMRStats:
@@ -144,23 +163,27 @@ class OMRStats:
     ink_p90: int
 
 # ============================================================
-# 3) AUDITS
+# 3) AUDITS (scoring)
 # ============================================================
+
+def scoring_ready(sk: Dict[int, List[int]], m: Dict[int, str]) -> bool:
+    return len(sk) == 240 and len(m) == 240
 
 def audit_scoring_key(sk: Dict[int, List[int]]) -> List[str]:
     errs: List[str] = []
+    if not sk:
+        return ["scoring_key vide (scoring désactivé, mais validité OK)."]
     if len(sk) != 240:
-        errs.append(f"scoring_key: nombre d'items = {len(sk)} (attendu 240).")
-
+        errs.append(f"scoring_key: {len(sk)} items (attendu 240).")
     for item_id in range(1, 241):
         if item_id not in sk:
             errs.append(f"scoring_key: item manquant {item_id}.")
             continue
         v = sk[item_id]
         if not isinstance(v, list) or len(v) != 5:
-            errs.append(f"scoring_key: item {item_id} doit contenir 5 valeurs, reçu: {v}.")
+            errs.append(f"scoring_key: item {item_id} doit avoir 5 valeurs, reçu {v}.")
             continue
-        if v not in ([4,3,2,1,0], [0,1,2,3,4]):
+        if v not in ([4, 3, 2, 1, 0], [0, 1, 2, 3, 4]):
             errs.append(f"scoring_key: item {item_id} pattern invalide {v}.")
         if v[2] != 2:
             errs.append(f"scoring_key: item {item_id} valeur N != 2 (reçu {v[2]}).")
@@ -168,9 +191,10 @@ def audit_scoring_key(sk: Dict[int, List[int]]) -> List[str]:
 
 def audit_item_to_facette(m: Dict[int, str]) -> List[str]:
     errs: List[str] = []
+    if not m:
+        return ["item_to_facette vide (scoring désactivé, mais validité OK)."]
     if len(m) != 240:
-        errs.append(f"item_to_facette: nombre d'items = {len(m)} (attendu 240).")
-
+        errs.append(f"item_to_facette: {len(m)} items (attendu 240).")
     for item_id in range(1, 241):
         if item_id not in m:
             errs.append(f"item_to_facette: item manquant {item_id}.")
@@ -199,6 +223,7 @@ def find_document_and_warp(img_bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray,
     gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     edged = cv2.Canny(blurred, 75, 200)
+
     cnts = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     cnts = imutils.grab_contours(cnts)
 
@@ -213,7 +238,8 @@ def find_document_and_warp(img_bgr: np.ndarray) -> Tuple[np.ndarray, np.ndarray,
                 break
 
     if doc is None:
-        return img_bgr.copy(), gray.copy(), False
+        # fallback: pas de perspective, on garde l'image entière
+        return img_bgr.copy(), cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY), False
 
     paper = four_point_transform(img_bgr, doc.reshape(4, 2))
     warped_gray = four_point_transform(gray, doc.reshape(4, 2))
@@ -241,14 +267,18 @@ def normalize_width(gray: np.ndarray, thr: np.ndarray, target_w: int = 1700) -> 
     return cv2.resize(gray, new_size), cv2.resize(thr, new_size)
 
 # ============================================================
-# 5) OMR — EXTRACTION INK PAR ROI
+# 5) OMR — EXTRACTION ENCRE PAR ROI
 # ============================================================
 
 def extract_inks(thr: np.ndarray, cfg: OMRConfig):
     H, W = thr.shape[:2]
-    x0 = int(cfg.grid_left * W);  x1 = int(cfg.grid_right * W)
-    y0 = int(cfg.grid_top * H);   y1 = int(cfg.grid_bottom * H)
 
+    x0 = int(cfg.grid_left * W)
+    x1 = int(cfg.grid_right * W)
+    y0 = int(cfg.grid_top * H)
+    y1 = int(cfg.grid_bottom * H)
+
+    # clamp
     x0 = max(0, min(W - 2, x0)); x1 = max(x0 + 1, min(W - 1, x1))
     y0 = max(0, min(H - 2, y0)); y1 = max(y0 + 1, min(H - 1, y1))
 
@@ -281,6 +311,7 @@ def extract_inks(thr: np.ndarray, cfg: OMRConfig):
 
                 roi = thr[by2:by2 + bh, bx:bx + bw]
                 ink = int(cv2.countNonZero(roi))
+
                 inks.append(ink)
                 all_inks.append(ink)
                 rois.append((bx, by2, bw, bh))
@@ -292,7 +323,7 @@ def extract_inks(thr: np.ndarray, cfg: OMRConfig):
 def auto_threshold_from_inks(all_inks: List[int], cfg: OMRConfig) -> Tuple[int, int, int, int]:
     v = np.array(all_inks, dtype=np.float32)
     if v.size < 100:
-        thr = 1200
+        thr = 900
         return thr, int(np.median(v)) if v.size else 0, 0, 0
     med = int(np.median(v))
     p10 = int(np.percentile(v, 10))
@@ -301,7 +332,8 @@ def auto_threshold_from_inks(all_inks: List[int], cfg: OMRConfig) -> Tuple[int, 
     return thr, med, p10, p90
 
 def decide_responses(raw_items, thr_img: np.ndarray, cfg: OMRConfig, thr_ink: int, overlay: bool):
-    responses: Dict[int, int] = {}
+    responses: Dict[int, int] = {}            # item -> idx
+    mark_state: Dict[int, str] = {}           # "marked" / "blank_imputed" / "blank_unimputed"
     warnings: List[str] = []
 
     blank = 0
@@ -312,27 +344,37 @@ def decide_responses(raw_items, thr_img: np.ndarray, cfg: OMRConfig, thr_ink: in
 
     ov = cv2.cvtColor(thr_img.copy(), cv2.COLOR_GRAY2BGR) if overlay else None
 
+    # seuil "blank" un peu plus strict pour éviter le bruit
+    blank_thr = int(thr_ink * cfg.blank_detect_margin)
+
     for (r, c, inks, rois) in raw_items:
         item_id = (r + 1) + 30 * c
+
         best_idx = int(np.argmax(inks))
         sorted_inks = sorted(inks, reverse=True)
         best_ink = int(sorted_inks[0])
 
+        # gap relatif entre 1er et 2e
         rel_gap = 1.0
         if sorted_inks[0] > 0:
             rel_gap = (sorted_inks[0] - sorted_inks[1]) / float(sorted_inks[0])
 
-        if best_ink < thr_ink:
+        # BLANK (non répondu)
+        if best_ink < blank_thr:
             blank += 1
             if cfg.impute_blank_to_N:
-                responses[item_id] = 2
+                responses[item_id] = 2  # N
                 neutral_imputed += 1
+                mark_state[item_id] = "blank_imputed"
                 warnings.append(f"Item {item_id}: non répondu → imputé à N.")
             else:
                 responses[item_id] = best_idx
+                mark_state[item_id] = "blank_unimputed"
                 warnings.append(f"Item {item_id}: non répondu.")
         else:
             responses[item_id] = best_idx
+            mark_state[item_id] = "marked"
+
             if best_idx == 2:
                 neutral_marked += 1
 
@@ -344,10 +386,11 @@ def decide_responses(raw_items, thr_img: np.ndarray, cfg: OMRConfig, thr_ink: in
                 ambiguous += 1
                 warnings.append(f"Item {item_id}: ambiguïté (gap relatif={rel_gap:.2f}).")
 
+        # overlay
         if ov is not None:
             chosen = responses[item_id]
             for j, (bx, by, bw, bh) in enumerate(rois):
-                col = (0, 255, 0) if j == chosen else (180, 180, 180)
+                col = (0, 200, 0) if j == chosen else (170, 170, 170)
                 cv2.rectangle(ov, (bx, by), (bx + bw, by + bh), col, 1)
 
     stats = OMRStats(
@@ -363,49 +406,42 @@ def decide_responses(raw_items, thr_img: np.ndarray, cfg: OMRConfig, thr_ink: in
         ink_p90=0
     )
 
-    return responses, warnings, stats, ov
+    return responses, mark_state, warnings, stats, ov
 
 # ============================================================
-# 6) SCORING + VALIDITÉ
+# 6) VALIDITÉ + STYLE
 # ============================================================
 
-def calculate_scores(responses: Dict[int, int]) -> Tuple[Dict[str,int], Dict[str,int]]:
-    fac_scores: Dict[str, int] = {fac: 0 for fac in facettes_to_domain.keys()}
-
-    for item_id, opt in responses.items():
-        if item_id in scoring_key and item_id in item_to_facette:
-            fac = item_to_facette[item_id]
-            fac_scores[fac] += scoring_key[item_id][opt]
-
-    dom_scores: Dict[str, int] = {d: 0 for d in domain_labels.keys()}
-    for fac, sc in fac_scores.items():
-        dom = facettes_to_domain.get(fac)
-        if dom:
-            dom_scores[dom] += sc
-
-    return fac_scores, dom_scores
-
-def protocol_validity(stats: OMRStats, responses: Dict[int,int], vcfg: ValidityConfig) -> Tuple[bool, List[str], int]:
+def protocol_validity(stats: OMRStats, vcfg: ValidityConfig) -> Tuple[bool, List[str]]:
     reasons: List[str] = []
     if stats.blank_count >= vcfg.blank_invalid_threshold:
         reasons.append(f"Items non répondus: {stats.blank_count} (seuil ≥ {vcfg.blank_invalid_threshold}).")
+    if stats.neutral_marked_count >= vcfg.neutral_invalid_threshold:
+        reasons.append(f"Réponses N cochées: {stats.neutral_marked_count} (seuil ≥ {vcfg.neutral_invalid_threshold}).")
+    return (len(reasons) == 0), reasons
 
-    neutral_total = sum(1 for _, v in responses.items() if v == 2)
-    if neutral_total >= vcfg.neutral_invalid_threshold:
-        reasons.append(f"Réponses N totales: {neutral_total} (seuil ≥ {vcfg.neutral_invalid_threshold}).")
-
-    if stats.ambiguous_count > vcfg.max_ambiguities_quality_gate:
-        reasons.append(f"Qualité faible: ambiguïtés={stats.ambiguous_count} (seuil > {vcfg.max_ambiguities_quality_gate}).")
-
-    return (len(reasons) == 0), reasons, neutral_total
-
-def response_style(responses: Dict[int,int]) -> Dict[str, float]:
+def response_style(responses: Dict[int,int], mark_state: Dict[int,str]) -> Dict[str, float]:
     counts = {0: 0, 1: 0, 2: 0, 3: 0, 4: 0}
-    for _, idx in responses.items():
+    blanks = 0
+    imputed = 0
+
+    for item_id, idx in responses.items():
         counts[idx] += 1
+        stt = mark_state.get(item_id, "marked")
+        if stt.startswith("blank"):
+            blanks += 1
+        if stt == "blank_imputed":
+            imputed += 1
+
     total = max(1, sum(counts.values()))
     return {
-        "FD": counts[0], "D": counts[1], "N": counts[2], "A": counts[3], "FA": counts[4],
+        "FD": counts[0],
+        "D": counts[1],
+        "N_total": counts[2],
+        "A": counts[3],
+        "FA": counts[4],
+        "Vides": blanks,
+        "N_imputés": imputed,
         "FD%": 100*counts[0]/total,
         "D%": 100*counts[1]/total,
         "N%": 100*counts[2]/total,
@@ -416,54 +452,72 @@ def response_style(responses: Dict[int,int]) -> Dict[str, float]:
     }
 
 # ============================================================
-# 7) EXPORTS
+# 7) SCORING (OPTIONNEL)
 # ============================================================
 
-def export_csv(fac_scores: Dict[str,int], dom_scores: Dict[str,int], style: Dict[str,float], stats: OMRStats, valid: bool, reasons: List[str], neutral_total: int) -> str:
+def calculate_scores(responses: Dict[int, int]) -> Tuple[Dict[str,int], Dict[str,int]]:
+    fac_scores: Dict[str, int] = {fac: 0 for fac in facettes_to_domain.keys()}
+    for item_id, opt in responses.items():
+        fac = item_to_facette[item_id]
+        fac_scores[fac] += scoring_key[item_id][opt]
+
+    dom_scores: Dict[str, int] = {d: 0 for d in domain_labels.keys()}
+    for fac, sc in fac_scores.items():
+        dom_scores[facettes_to_domain[fac]] += sc
+    return fac_scores, dom_scores
+
+# ============================================================
+# 8) EXPORTS
+# ============================================================
+
+def export_csv(valid: bool, reasons: List[str], stats: OMRStats, style: Dict[str,float],
+               fac_scores: Optional[Dict[str,int]], dom_scores: Optional[Dict[str,int]]) -> str:
     out = io.StringIO()
     w = csv.writer(out)
 
     w.writerow(["SECTION", "LIBELLÉ", "VALEUR"])
     w.writerow(["VALIDITÉ", "Protocole", "VALIDE" if valid else "INVALIDE"])
-    if reasons:
-        for r in reasons:
-            w.writerow(["VALIDITÉ", "Raison", r])
+    for r in reasons:
+        w.writerow(["VALIDITÉ", "Raison", r])
 
     w.writerow([])
     w.writerow(["QUALITÉ", "Seuil encrage (auto)", stats.threshold_ink])
     w.writerow(["QUALITÉ", "Items vides", stats.blank_count])
     w.writerow(["QUALITÉ", "Ambiguïtés", stats.ambiguous_count])
     w.writerow(["QUALITÉ", "Marquages faibles", stats.weak_mark_count])
-    w.writerow(["QUALITÉ", "N total", neutral_total])
     w.writerow(["QUALITÉ", "N cochés", stats.neutral_marked_count])
     w.writerow(["QUALITÉ", "N imputés", stats.neutral_imputed_count])
-
-    w.writerow([])
-    w.writerow(["DOMAINES", "Domaine", "Score brut"])
-    for d in sorted(dom_scores.keys()):
-        w.writerow(["DOMAINES", domain_labels[d], dom_scores[d]])
-
-    w.writerow([])
-    w.writerow(["FACETTES", "Facette", "Score brut"])
-    for fac in sorted(fac_scores.keys()):
-        w.writerow(["FACETTES", facette_labels.get(fac, fac), fac_scores[fac]])
 
     w.writerow([])
     w.writerow(["STYLE", "Indice", "Valeur"])
     for k, v in style.items():
         w.writerow(["STYLE", k, v])
 
+    if dom_scores is not None and fac_scores is not None:
+        w.writerow([])
+        w.writerow(["DOMAINES", "Domaine", "Score brut"])
+        for d in sorted(dom_scores.keys()):
+            w.writerow(["DOMAINES", domain_labels[d], dom_scores[d]])
+
+        w.writerow([])
+        w.writerow(["FACETTES", "Facette", "Score brut"])
+        for fac in sorted(fac_scores.keys()):
+            w.writerow(["FACETTES", facette_labels.get(fac, fac), fac_scores[fac]])
+    else:
+        w.writerow([])
+        w.writerow(["SCORING", "Statut", "Désactivé (tables non fournies)"])
+
     return out.getvalue()
 
-def export_txt(valid: bool, reasons: List[str], fac_scores: Dict[str,int], dom_scores: Dict[str,int], style: Dict[str,float], stats: OMRStats, neutral_total: int) -> str:
+def export_txt(valid: bool, reasons: List[str], stats: OMRStats, style: Dict[str,float],
+               fac_scores: Optional[Dict[str,int]], dom_scores: Optional[Dict[str,int]]) -> str:
     lines: List[str] = []
-    lines.append("RAPPORT NEO PI-R — OMR CLINIQUE (SMARTPHONE)")
+    lines.append("RAPPORT NEO PI-R — OMR CLINIQUE (PHOTO SMARTPHONE)")
     lines.append("")
     lines.append("VALIDITÉ")
     lines.append("VALIDE" if valid else "INVALIDE")
-    if reasons:
-        for r in reasons:
-            lines.append(f"- {r}")
+    for r in reasons:
+        lines.append(f"- {r}")
 
     lines.append("")
     lines.append("QUALITÉ DE LECTURE")
@@ -471,31 +525,37 @@ def export_txt(valid: bool, reasons: List[str], fac_scores: Dict[str,int], dom_s
     lines.append(f"Items vides: {stats.blank_count}/{stats.total_items}")
     lines.append(f"Ambiguïtés: {stats.ambiguous_count}")
     lines.append(f"Marquages faibles: {stats.weak_mark_count}")
-    lines.append(f"N total: {neutral_total} (cochés={stats.neutral_marked_count}, imputés={stats.neutral_imputed_count})")
+    lines.append(f"N cochés: {stats.neutral_marked_count}")
+    lines.append(f"N imputés: {stats.neutral_imputed_count}")
 
     lines.append("")
     lines.append("STYLE DE RÉPONSE (DESCRIPTIF)")
     for k, v in style.items():
         lines.append(f"{k}: {v}")
 
-    lines.append("")
-    lines.append("TOTAUX DOMAINES (BRUT)")
-    for d in sorted(dom_scores.keys()):
-        lines.append(f"{domain_labels[d]}: {dom_scores[d]}")
+    if dom_scores is not None and fac_scores is not None:
+        lines.append("")
+        lines.append("TOTAUX DOMAINES (BRUT)")
+        for d in sorted(dom_scores.keys()):
+            lines.append(f"{domain_labels[d]}: {dom_scores[d]}")
 
-    lines.append("")
-    lines.append("SCORES FACETTES (BRUT)")
-    for fac in sorted(fac_scores.keys()):
-        lines.append(f"{facette_labels.get(fac, fac)}: {fac_scores[fac]}")
+        lines.append("")
+        lines.append("SCORES FACETTES (BRUT)")
+        for fac in sorted(fac_scores.keys()):
+            lines.append(f"{facette_labels.get(fac, fac)}: {fac_scores[fac]}")
+    else:
+        lines.append("")
+        lines.append("SCORING")
+        lines.append("Désactivé : tables scoring_key et/ou item_to_facette non fournies.")
 
     return "\n".join(lines)
 
 # ============================================================
-# 8) UI
+# 9) UI
 # ============================================================
 
-st.title("NEO PI-R — OMR Clinique (Smartphone)")
-st.caption("Lecture robuste d'une photo caméra — réponses FD/D/N/A/FA entourées — scoring via clé (items directs/inversés).")
+st.title("NEO PI-R — OMR Clinique (Photo smartphone)")
+st.caption("Lecture des lettres entourées FD/D/N/A/FA — validité protocolaire automatique — scoring optionnel si tables collées.")
 
 with st.sidebar:
     st.markdown("## Paramètres (calibration)")
@@ -504,46 +564,42 @@ with st.sidebar:
         grid_right=st.slider("Grille — droite", 0.80, 1.00, 0.95, 0.005),
         grid_top=st.slider("Grille — haut", 0.10, 0.35, 0.205, 0.005),
         grid_bottom=st.slider("Grille — bas", 0.70, 0.95, 0.86, 0.005),
-        impute_blank_to_N=st.toggle("Imputer item vide à N (2 points)", value=True),
+        impute_blank_to_N=st.toggle("Imputer item vide à N (pour scoring)", value=True),
     )
     cfg.auto_threshold_factor = st.slider("Auto-seuil (facteur)", 1.2, 3.0, 1.8, 0.05)
     cfg.ambiguity_rel_gap = st.slider("Ambiguïté (gap relatif)", 0.02, 0.40, 0.12, 0.01)
     cfg.weak_rel_margin = st.slider("Marquage faible (marge)", 1.05, 2.00, 1.35, 0.05)
+    cfg.blank_detect_margin = st.slider("Détection vide (marge)", 0.70, 1.10, 0.92, 0.01)
 
     st.markdown("---")
     st.markdown("## Validité protocolaire")
     vcfg = ValidityConfig(
         blank_invalid_threshold=st.number_input("Invalide si items vides ≥", 0, 240, 15, 1),
-        neutral_invalid_threshold=st.number_input("Invalide si N total ≥", 0, 240, 42, 1),
-        max_ambiguities_quality_gate=st.number_input("Garde qualité si ambiguïtés >", 0, 240, 30, 1),
+        neutral_invalid_threshold=st.number_input("Invalide si N cochés ≥", 0, 240, 42, 1),
     )
 
     st.markdown("---")
-    show_overlay = st.toggle("Afficher overlay ROI", value=False)
-    show_audit = st.toggle("Afficher audit tables", value=True)
+    show_overlay = st.toggle("Afficher overlay ROIs", value=False)
+    show_audit = st.toggle("Audit tables (scoring)", value=True)
 
-# Audit tables
 if show_audit:
-    errs = []
-    if not scoring_key:
-        errs.append("scoring_key est vide (colle la table).")
-    if not item_to_facette:
-        errs.append("item_to_facette est vide (colle la table).")
-    if scoring_key:
-        errs.extend(audit_scoring_key(scoring_key))
-    if item_to_facette:
-        errs.extend(audit_item_to_facette(item_to_facette))
-
-    with st.expander("Audit tables (intégrité)", expanded=True):
-        if errs:
-            st.error("Tables non conformes. Corrige avant usage.")
-            st.code("\n".join(errs[:300]), language="text")
-            if len(errs) > 300:
-                st.info(f"{len(errs)} erreurs au total. Affichage limité.")
+    with st.expander("Audit tables (scoring) — facultatif", expanded=False):
+        e1 = audit_scoring_key(scoring_key)
+        e2 = audit_item_to_facette(item_to_facette)
+        # si les 2 tables sont complètes et correctes, l’audit peut être long -> on affiche résumé
+        if scoring_ready(scoring_key, item_to_facette):
+            st.success("Tables complètes (240/240). Scoring activé.")
         else:
-            st.success("Tables OK (240 items, patterns valides, facettes valides).")
+            st.info("Scoring désactivé tant que les 2 tables ne sont pas complètes. Validité OMR fonctionne quand même.")
+        st.code("\n".join((e1 + e2)[:200]), language="text")
 
-uploaded = st.file_uploader("Importer la feuille (photo caméra JPG/PNG)", type=["jpg", "jpeg", "png"])
+st.markdown(
+    "<div class='note'><b>Important :</b> Même si tu ne colles pas les tables, l’app analyse la feuille et "
+    "retourne <b>VALIDE/INVALIDE</b>. Le scoring (facettes/domaines) devient actif seulement si les tables sont complètes.</div>",
+    unsafe_allow_html=True
+)
+
+uploaded = st.file_uploader("Importer la feuille (photo JPG/PNG)", type=["jpg", "jpeg", "png"])
 
 if uploaded:
     colA, colB = st.columns([0.7, 0.3], vertical_alignment="top")
@@ -555,10 +611,6 @@ if uploaded:
 
     if run:
         try:
-            if not scoring_key or not item_to_facette:
-                st.error("Colle scoring_key et item_to_facette complets (1..240).")
-                st.stop()
-
             pil_img = Image.open(uploaded)
             img_bgr = pil_to_bgr(pil_img)
 
@@ -566,79 +618,96 @@ if uploaded:
             thr = robust_threshold(warped_gray)
             warped_gray, thr = normalize_width(warped_gray, thr, target_w=1700)
 
-            # OMR
             all_inks, raw_items = extract_inks(thr, cfg)
             thr_ink, med, p10, p90 = auto_threshold_from_inks(all_inks, cfg)
-            responses, warnings, stats, overlay = decide_responses(raw_items, thr, cfg, thr_ink, overlay=show_overlay)
 
+            responses, mark_state, warnings, stats, overlay = decide_responses(
+                raw_items, thr, cfg, thr_ink, overlay=show_overlay
+            )
             stats.ink_median = med
             stats.ink_p10 = p10
             stats.ink_p90 = p90
 
-            # scoring
-            fac_scores, dom_scores = calculate_scores(responses)
+            # Validité (✅ se calcule toujours)
+            valid, reasons = protocol_validity(stats, vcfg)
 
-            # validité
-            valid, reasons, neutral_total = protocol_validity(stats, responses, vcfg)
+            # Style descriptif
+            style = response_style(responses, mark_state)
 
-            # style
-            style = response_style(responses)
+            # Scoring (✅ seulement si tables complètes)
+            scoring_enabled = scoring_ready(scoring_key, item_to_facette)
+            fac_scores = None
+            dom_scores = None
+            if scoring_enabled:
+                fac_scores, dom_scores = calculate_scores(responses)
 
+            # KPIs
             response_rate = 100.0 * (1.0 - stats.blank_count / max(1, stats.total_items))
-            quality_proxy = max(0.0, 100.0 * (1.0 - (stats.ambiguous_count + 0.5 * stats.weak_mark_count) / max(1, stats.total_items)))
+            quality_proxy = max(
+                0.0,
+                100.0 * (1.0 - (stats.ambiguous_count + 0.5 * stats.weak_mark_count) / max(1, stats.total_items))
+            )
 
             st.markdown("### Résumé")
-
             k1, k2, k3, k4 = st.columns(4)
             k1.markdown(
-                f"<div class='card'><div class='label'>Validité</div><div class='value'>{'VALIDE' if valid else 'INVALIDE'}</div>"
-                f"<div class='sub'>Règles: vides ≥ {vcfg.blank_invalid_threshold} · N ≥ {vcfg.neutral_invalid_threshold}</div></div>",
+                f"<div class='card'><div class='label'>Validité</div>"
+                f"<div class='value'>{'VALIDE' if valid else 'INVALIDE'}</div>"
+                f"<div class='sub'>Règles: vides ≥ {vcfg.blank_invalid_threshold} · N cochés ≥ {vcfg.neutral_invalid_threshold}</div></div>",
                 unsafe_allow_html=True
             )
             k2.markdown(
-                f"<div class='card'><div class='label'>Taux de réponse</div><div class='value'>{response_rate:.1f}%</div>"
+                f"<div class='card'><div class='label'>Taux de réponse</div>"
+                f"<div class='value'>{response_rate:.1f}%</div>"
                 f"<div class='sub'>Vides: {stats.blank_count}/{stats.total_items}</div></div>",
                 unsafe_allow_html=True
             )
             k3.markdown(
-                f"<div class='card'><div class='label'>N total</div><div class='value'>{neutral_total}</div>"
-                f"<div class='sub'>Cochés: {stats.neutral_marked_count} · Imputés: {stats.neutral_imputed_count}</div></div>",
+                f"<div class='card'><div class='label'>N cochés</div>"
+                f"<div class='value'>{stats.neutral_marked_count}</div>"
+                f"<div class='sub'>N imputés: {stats.neutral_imputed_count}</div></div>",
                 unsafe_allow_html=True
             )
             k4.markdown(
-                f"<div class='card'><div class='label'>Qualité lecture</div><div class='value'>{quality_proxy:.1f}%</div>"
+                f"<div class='card'><div class='label'>Qualité lecture</div>"
+                f"<div class='value'>{quality_proxy:.1f}%</div>"
                 f"<div class='sub'>Ambiguïtés: {stats.ambiguous_count} · Faibles: {stats.weak_mark_count} · Seuil: {stats.threshold_ink}</div></div>",
                 unsafe_allow_html=True
             )
 
             if valid:
-                st.success("Protocole valide.")
+                st.success("✅ Protocole valide.")
             else:
-                st.error("Protocole invalide.")
+                st.error("❌ Protocole invalide.")
                 for r in reasons:
                     st.warning(r)
 
-            tab1, tab2, tab3, tab4 = st.tabs(["Scores", "Qualité & images", "Avertissements", "Exports"])
+            if not scoring_enabled:
+                st.info("Scoring désactivé : colle scoring_key + item_to_facette complets (1..240) pour activer les scores.")
+
+            tab1, tab2, tab3, tab4 = st.tabs(["Résultats", "Qualité & images", "Avertissements", "Exports"])
 
             with tab1:
-                st.subheader("Domaines (scores bruts)")
-                dom_table = [{"Domaine": domain_labels[d], "Score brut": dom_scores[d]} for d in sorted(dom_scores.keys())]
-                st.dataframe(dom_table, use_container_width=True, hide_index=True)
+                st.subheader("Distribution des réponses (descriptif)")
+                st.write(style)
 
-                st.subheader("Facettes (scores bruts)")
-                fac_table = [{"Facette": facette_labels.get(f, f), "Score brut": fac_scores[f]} for f in sorted(fac_scores.keys())]
-                st.dataframe(fac_table, use_container_width=True, hide_index=True)
+                if scoring_enabled and dom_scores is not None and fac_scores is not None:
+                    st.subheader("Domaines (scores bruts)")
+                    dom_table = [{"Domaine": domain_labels[d], "Score brut": dom_scores[d]} for d in sorted(dom_scores.keys())]
+                    st.dataframe(dom_table, use_container_width=True, hide_index=True)
+
+                    st.subheader("Facettes (scores bruts)")
+                    fac_table = [{"Facette": facette_labels.get(f, f), "Score brut": fac_scores[f]} for f in sorted(fac_scores.keys())]
+                    st.dataframe(fac_table, use_container_width=True, hide_index=True)
 
             with tab2:
                 st.subheader("Qualité")
                 st.write({
-                    "doc_detecté": doc_found,
+                    "document_detecté": doc_found,
                     "seuil_encrage_auto": stats.threshold_ink,
                     "ink_médian": stats.ink_median,
                     "ink_p10": stats.ink_p10,
                     "ink_p90": stats.ink_p90,
-                    "ambiguïtés": stats.ambiguous_count,
-                    "marquages_faibles": stats.weak_mark_count,
                 })
 
                 c1, c2 = st.columns(2)
@@ -663,13 +732,13 @@ if uploaded:
 
             with tab4:
                 st.subheader("Exports")
-                csv_text = export_csv(fac_scores, dom_scores, style, stats, valid, reasons, neutral_total)
+                csv_text = export_csv(valid, reasons, stats, style, fac_scores, dom_scores)
                 st.download_button("Télécharger CSV", csv_text, file_name="neo_pir_export.csv", mime="text/csv")
 
-                txt_text = export_txt(valid, reasons, fac_scores, dom_scores, style, stats, neutral_total)
+                txt_text = export_txt(valid, reasons, stats, style, fac_scores, dom_scores)
                 st.download_button("Télécharger rapport TXT", txt_text, file_name="neo_pir_report.txt", mime="text/plain")
 
         except Exception as e:
             st.error(f"Erreur : {e}")
 
-st.markdown("<div class='footer'>NEO PI-R — OMR Clinique (Smartphone) · © 2026</div>", unsafe_allow_html=True)
+st.markdown("<div class='footer'>NEO PI-R — OMR Clinique · © 2026</div>", unsafe_allow_html=True)
