@@ -2,27 +2,26 @@ import io
 import os
 import csv
 from dataclasses import dataclass
-from typing import Dict, Tuple, List, Optional
+from typing import Dict, Tuple, List
 
 import streamlit as st
 import cv2
 import numpy as np
 from PIL import Image
+import matplotlib.pyplot as plt
 
 
 # ============================================================
-# 0) OUTILS PERSPECTIVE (remplace imutils.four_point_transform)
+# 0) PERSPECTIVE + ROTATION (sans imutils/scipy)
 # ============================================================
 def order_points(pts: np.ndarray) -> np.ndarray:
-    # pts: (4,2)
     rect = np.zeros((4, 2), dtype="float32")
     s = pts.sum(axis=1)
-    rect[0] = pts[np.argmin(s)]  # top-left
-    rect[2] = pts[np.argmax(s)]  # bottom-right
-
+    rect[0] = pts[np.argmin(s)]  # TL
+    rect[2] = pts[np.argmax(s)]  # BR
     diff = np.diff(pts, axis=1)
-    rect[1] = pts[np.argmin(diff)]  # top-right
-    rect[3] = pts[np.argmax(diff)]  # bottom-left
+    rect[1] = pts[np.argmin(diff)]  # TR
+    rect[3] = pts[np.argmax(diff)]  # BL
     return rect
 
 
@@ -32,44 +31,51 @@ def four_point_transform(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
 
     widthA = np.linalg.norm(br - bl)
     widthB = np.linalg.norm(tr - tl)
-    maxWidth = int(max(widthA, widthB))
+    maxW = int(max(widthA, widthB))
 
     heightA = np.linalg.norm(tr - br)
     heightB = np.linalg.norm(tl - bl)
-    maxHeight = int(max(heightA, heightB))
+    maxH = int(max(heightA, heightB))
 
     dst = np.array(
         [[0, 0],
-         [maxWidth - 1, 0],
-         [maxWidth - 1, maxHeight - 1],
-         [0, maxHeight - 1]],
-        dtype="float32"
+         [maxW - 1, 0],
+         [maxW - 1, maxH - 1],
+         [0, maxH - 1]], dtype="float32"
     )
 
     M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
-    return warped
+    return cv2.warpPerspective(image, M, (maxW, maxH))
 
 
-def rotate_90(bgr: np.ndarray, k: int) -> np.ndarray:
-    # k = 0,1,2,3 (0°,90°,180°,270°)
-    if k % 4 == 0:
+def rotate_k90(bgr: np.ndarray, k: int) -> np.ndarray:
+    k = k % 4
+    if k == 0:
         return bgr
-    if k % 4 == 1:
+    if k == 1:
         return cv2.rotate(bgr, cv2.ROTATE_90_CLOCKWISE)
-    if k % 4 == 2:
+    if k == 2:
         return cv2.rotate(bgr, cv2.ROTATE_180)
     return cv2.rotate(bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
 
 
+def resize_keep_aspect(bgr: np.ndarray, target_width: int) -> np.ndarray:
+    h, w = bgr.shape[:2]
+    if w <= target_width:
+        return bgr
+    scale = target_width / float(w)
+    nh = int(h * scale)
+    return cv2.resize(bgr, (target_width, nh), interpolation=cv2.INTER_AREA)
+
+
 # ============================================================
-# 1) SCORING KEY
-#    ✅ Conseil pro: charge depuis scoring_key.csv (repo)
+# 1) SCORING KEY depuis scoring_key.csv (pro)
 # ============================================================
+@st.cache_resource
 def load_scoring_key_from_csv(path: str = "scoring_key.csv") -> Dict[int, List[int]]:
     if not os.path.exists(path):
         raise FileNotFoundError(
-            f"'{path}' introuvable. Ajoute scoring_key.csv à la racine du projet."
+            f"'{path}' introuvable. Mets scoring_key.csv à la racine du projet."
         )
 
     with open(path, "r", encoding="utf-8") as f:
@@ -90,7 +96,6 @@ def load_scoring_key_from_csv(path: str = "scoring_key.csv") -> Dict[int, List[i
     return key
 
 
-# Charger clé depuis CSV (recommandé)
 scoring_key = load_scoring_key_from_csv("scoring_key.csv")
 
 
@@ -134,7 +139,7 @@ domain_labels = {'N': 'Névrosisme', 'E': 'Extraversion', 'O': 'Ouverture', 'A':
 
 
 # ============================================================
-# 3) RÈGLES PROTOCOLE
+# 3) PROTOCOLE
 # ============================================================
 @dataclass
 class ProtocolRules:
@@ -145,7 +150,7 @@ class ProtocolRules:
 
 
 # ============================================================
-# 4) VISION
+# 4) VISION: redressement + tableau + micro-ajustement
 # ============================================================
 def pil_to_bgr(pil_img: Image.Image) -> np.ndarray:
     pil_img = pil_img.convert("RGB")
@@ -153,25 +158,16 @@ def pil_to_bgr(pil_img: Image.Image) -> np.ndarray:
     return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
 
 
-def resize_keep_aspect(bgr: np.ndarray, target_width: int) -> np.ndarray:
-    h, w = bgr.shape[:2]
-    if w <= target_width:
-        return bgr
-    scale = target_width / float(w)
-    nh = int(h * scale)
-    return cv2.resize(bgr, (target_width, nh), interpolation=cv2.INTER_AREA)
-
-
 def find_document_warp_auto_rotate(bgr: np.ndarray, target_width: int = 1800) -> Tuple[np.ndarray, int]:
     """
-    Essaie 0/90/180/270. Garde la rotation qui maximise la surface du quadrilatère détecté.
+    Essaie 0/90/180/270. Garde la rotation qui maximise l'aire du quadrilatère détecté.
     """
     best_area = -1.0
     best_warp = None
     best_k = 0
 
     for k in [0, 1, 2, 3]:
-        img = rotate_90(bgr, k)
+        img = rotate_k90(bgr, k)
         resized = resize_keep_aspect(img, target_width)
 
         gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
@@ -197,7 +193,7 @@ def find_document_warp_auto_rotate(bgr: np.ndarray, target_width: int = 1800) ->
                 break
 
     if best_warp is None:
-        raise ValueError("Impossible de détecter la feuille (4 coins) — essaye une photo plus cadrée.")
+        raise ValueError("Feuille non détectée (4 coins). Photo trop loin / trop floue / fond chargé.")
 
     return best_warp, best_k
 
@@ -206,10 +202,8 @@ def binarize(bgr: np.ndarray) -> np.ndarray:
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (3, 3), 0)
     thr = cv2.adaptiveThreshold(
-        gray, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV,
-        31, 7
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV, 31, 7
     )
     return thr
 
@@ -232,32 +226,27 @@ def build_grid_mask(thr_inv: np.ndarray) -> np.ndarray:
 
 def find_table_bbox_soft(thr_inv: np.ndarray) -> Tuple[int, int, int, int]:
     """
-    Détection souple du tableau. Si ça échoue, fallback sur zone centrale.
+    Détection souple du tableau. Si échec -> fallback zone centrale.
     """
     grid = build_grid_mask(thr_inv)
     cnts, _ = cv2.findContours(grid, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
-    h, w = thr_inv.shape[:2]
-
+    H, W = thr_inv.shape[:2]
     if cnts:
         cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
-        for c in cnts[:5]:
-            x, y, bw, bh = cv2.boundingRect(c)
-
-            # critères souples + tableau plutôt central
-            area_ok = (bw * bh) > 0.20 * (w * h)
-            center_x = x + bw / 2
-            center_y = y + bh / 2
-            center_ok = (w * 0.20) < center_x < (w * 0.80) and (h * 0.20) < center_y < (h * 0.80)
-
+        for c in cnts[:6]:
+            x, y, w, h = cv2.boundingRect(c)
+            area_ok = (w * h) > 0.20 * (W * H)
+            cx, cy = x + w / 2, y + h / 2
+            center_ok = (W * 0.20) < cx < (W * 0.80) and (H * 0.20) < cy < (H * 0.80)
             if area_ok and center_ok:
-                return x, y, bw, bh
+                return x, y, w, h
 
-    # fallback: zone centrale (marche même si lignes mal détectées)
-    fx = int(w * 0.05)
-    fy = int(h * 0.12)
-    fw = int(w * 0.90)
-    fh = int(h * 0.78)
+    # fallback central
+    fx = int(W * 0.05)
+    fy = int(H * 0.12)
+    fw = int(W * 0.90)
+    fh = int(H * 0.78)
     return fx, fy, fw, fh
 
 
@@ -309,18 +298,16 @@ def split_grid_uniform(table_bbox: Tuple[int, int, int, int], rows: int = 30, co
 
 def split_grid_micro_adjust(thr_inv: np.ndarray, table_bbox: Tuple[int, int, int, int], rows: int = 30, cols: int = 8):
     """
-    Micro-ajustement: si on détecte assez de lignes de grille -> on les utilise,
-    sinon fallback -> split uniforme.
+    Micro-ajustement: essaie d'estimer les frontières via la grille.
+    Si insuffisant -> fallback uniforme.
     """
     x, y, w, h = table_bbox
     roi = thr_inv[y:y + h, x:x + w]
     grid = build_grid_mask(roi)
 
-    # projections
     proj_x = grid.sum(axis=0).astype(np.float32)
     proj_y = grid.sum(axis=1).astype(np.float32)
 
-    # normalisation
     if proj_x.max() > 0:
         proj_x /= proj_x.max()
     if proj_y.max() > 0:
@@ -336,26 +323,20 @@ def split_grid_micro_adjust(thr_inv: np.ndarray, table_bbox: Tuple[int, int, int
             if i - last >= min_dist:
                 peaks.append(i)
                 last = i
-        # réduire/compléter si trop
         if len(peaks) > n_needed:
-            # prendre uniformément
             keep = np.linspace(0, len(peaks) - 1, n_needed).round().astype(int)
             peaks = [peaks[i] for i in keep]
         return peaks
 
-    # on veut 9 lignes verticales (8 cols => 9 frontières) et 31 horizontales (30 rows => 31 frontières)
     vx = pick_peaks(proj_x, n_needed=9, min_dist=max(5, w // 50), thr=0.35)
     hy = pick_peaks(proj_y, n_needed=31, min_dist=max(5, h // 80), thr=0.35)
 
-    # fallback si insuffisant
     if len(vx) != 9 or len(hy) != 31:
         yield from split_grid_uniform(table_bbox, rows=rows, cols=cols)
         return
 
     vx = sorted(vx)
     hy = sorted(hy)
-
-    # convertir en coordonnées globales
     vxg = [x + v for v in vx]
     hyg = [y + u for u in hy]
 
@@ -371,15 +352,14 @@ def read_responses_from_grid(
     table_bbox: Tuple[int, int, int, int],
     mark_threshold: float,
     ambiguity_gap: float,
-    use_micro_adjust: bool = True
+    use_micro_adjust: bool
 ) -> Tuple[Dict[int, int], Dict[int, dict], np.ndarray]:
 
     overlay = cv2.cvtColor(thr_inv.copy(), cv2.COLOR_GRAY2BGR)
-
     responses: Dict[int, int] = {}
     meta: Dict[int, dict] = {}
 
-    splitter = split_grid_micro_adjust if use_micro_adjust else split_grid_uniform
+    splitter = split_grid_micro_adjust if use_micro_adjust else (lambda a, b, rows=30, cols=8: split_grid_uniform(b, rows, cols))
 
     for r, c, cell in splitter(thr_inv, table_bbox, rows=30, cols=8):
         item_id = item_id_from_rc(r, c)
@@ -427,7 +407,6 @@ def read_responses_from_grid(
 # ============================================================
 def compute_scores(responses: Dict[int, int]) -> Tuple[Dict[str, int], Dict[str, int]]:
     facette_scores = {fac: 0 for fac in facette_labels.keys()}
-
     for item_id, idx in responses.items():
         if idx == -1:
             continue
@@ -439,7 +418,6 @@ def compute_scores(responses: Dict[int, int]) -> Tuple[Dict[str, int], Dict[str,
     domain_scores = {d: 0 for d in domain_labels.keys()}
     for fac, sc in facette_scores.items():
         domain_scores[facettes_to_domain[fac]] += sc
-
     return facette_scores, domain_scores
 
 
@@ -475,17 +453,51 @@ def apply_protocol_rules(responses: Dict[int, int], rules: ProtocolRules) -> Tup
 
 
 # ============================================================
-# 6) STREAMLIT UI
+# 6) GRAPHIQUE PROFIL (Domaines + 30 facettes) + export
+# ============================================================
+def plot_profile(facette_scores: Dict[str, int], domain_scores: Dict[str, int]):
+    x_labels = ["N", "E", "O", "A", "C"] + [
+        "N1","N2","N3","N4","N5","N6",
+        "E1","E2","E3","E4","E5","E6",
+        "O1","O2","O3","O4","O5","O6",
+        "A1","A2","A3","A4","A5","A6",
+        "C1","C2","C3","C4","C5","C6",
+    ]
+
+    y = [domain_scores[d] for d in ["N","E","O","A","C"]] + [facette_scores[k] for k in x_labels[5:]]
+
+    fig = plt.figure(figsize=(16, 5))
+    ax = plt.gca()
+
+    ax.plot(range(len(x_labels)), y, marker="o", linewidth=2)
+    ax.set_xticks(range(len(x_labels)))
+    ax.set_xticklabels(x_labels, rotation=60, ha="right")
+    ax.set_title("Profil NEO PI-R — Scores bruts (Domaines + 30 facettes)")
+    ax.set_ylabel("Score brut")
+    ax.grid(True, axis="y", linestyle="--", alpha=0.3)
+    plt.tight_layout()
+    return fig
+
+
+def fig_to_bytes(fig, fmt: str) -> bytes:
+    buf = io.BytesIO()
+    fig.savefig(buf, format=fmt, bbox_inches="tight")
+    buf.seek(0)
+    return buf.getvalue()
+
+
+# ============================================================
+# 7) STREAMLIT UI
 # ============================================================
 st.set_page_config(page_title="NEO PI-R Scanner", page_icon="🧾", layout="wide")
 
 st.title("NEO PI-R — Scanner & Calculateur (Feuille de réponses)")
-st.caption("Détection auto rotation + redressement + grille 30×8 + micro-ajustement des cellules.")
+st.caption("Rotation auto • Redressement • Grille 30×8 • Micro-ajustement • Scoring • Exports • Profil graphique")
 
 RULES_DEFAULT = ProtocolRules()
 
 with st.sidebar:
-    st.subheader("Lecture (photo)")
+    st.subheader("Lecture photo")
     mark_threshold = st.slider("Seuil 'réponse détectée' (%)", 0.1, 10.0, 1.2, 0.1)
     ambiguity_gap = st.slider("Seuil ambiguïté (écart %)", 0.5, 10.0, 2.0, 0.5)
     use_micro = st.toggle("Micro-ajustement cellules (recommandé)", value=True)
@@ -495,6 +507,7 @@ with st.sidebar:
     max_blank_invalid = st.number_input("Items vides ⇒ invalide si ≥", 0, 240, RULES_DEFAULT.max_blank_invalid)
     max_N_invalid = st.number_input("Réponses 'N' ⇒ invalide si ≥", 0, 240, RULES_DEFAULT.max_N_invalid)
     impute_blank_if_leq = st.number_input("Imputation si blancs ≤", 0, 240, RULES_DEFAULT.impute_blank_if_leq)
+
     debug = st.toggle("Debug", value=False)
 
 RULES = ProtocolRules(
@@ -504,7 +517,7 @@ RULES = ProtocolRules(
     impute_option_index=2
 )
 
-uploaded = st.file_uploader("Importer une photo/scanner de la feuille (JPG/PNG)", type=["jpg", "jpeg", "png"])
+uploaded = st.file_uploader("Importer une photo/scanner (JPG/PNG)", type=["jpg", "jpeg", "png"])
 run = st.button("Scanner & Calculer", type="primary", disabled=(uploaded is None))
 
 if run and uploaded:
@@ -545,7 +558,9 @@ if run and uploaded:
         else:
             st.success("Protocole VALIDE")
 
-        tab1, tab2, tab3, tab4 = st.tabs(["Overlay", "Scores facettes", "Scores domaines", "Exports"])
+        tab1, tab2, tab3, tab4, tab5 = st.tabs(
+            ["Overlay", "Scores facettes", "Scores domaines", "Profil graphique", "Exports"]
+        )
 
         with tab1:
             colA, colB = st.columns(2)
@@ -566,18 +581,26 @@ if run and uploaded:
             data = []
             for fac in sorted(facette_labels.keys()):
                 items = [str(k) for k, v in sorted(item_to_facette.items()) if v == fac]
-                data.append({
-                    "Facette": facette_labels[fac],
-                    "Items": ", ".join(items),
-                    "Score brut": facette_scores[fac]
-                })
+                data.append({"Facette": facette_labels[fac], "Items": ", ".join(items), "Score brut": facette_scores[fac]})
             st.dataframe(data, use_container_width=True, hide_index=True)
 
         with tab3:
-            dom_data = [{"Domaine": domain_labels[d], "Score": domain_scores[d]} for d in sorted(domain_labels.keys())]
+            dom_data = [{"Domaine": domain_labels[d], "Score": domain_scores[d]} for d in ["N","E","O","A","C"]]
             st.dataframe(dom_data, use_container_width=True, hide_index=True)
 
         with tab4:
+            st.subheader("Profil (style pro, scores bruts)")
+            fig = plot_profile(facette_scores, domain_scores)
+            st.pyplot(fig)
+
+            png_bytes = fig_to_bytes(fig, "png")
+            pdf_bytes = fig_to_bytes(fig, "pdf")
+
+            st.download_button("📥 Télécharger profil PNG", png_bytes, "neo_pir_profile.png", "image/png")
+            st.download_button("📥 Télécharger profil PDF", pdf_bytes, "neo_pir_profile.pdf", "application/pdf")
+
+        with tab5:
+            # CSV
             out = io.StringIO()
             writer = csv.DictWriter(out, fieldnames=["Facette", "Items", "Score brut"])
             writer.writeheader()
@@ -589,6 +612,7 @@ if run and uploaded:
 
             st.download_button("📥 Télécharger CSV", out.getvalue(), "neo_pir_scores.csv", "text/csv")
 
+            # TXT
             report_lines = ["RAPPORT NEO PI-R", ""]
             report_lines.append(f"STATUT PROTOCOLE: {'VALIDE' if valid else 'INVALIDE'}")
             if status["reasons"]:
