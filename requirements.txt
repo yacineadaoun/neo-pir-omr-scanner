@@ -1,6 +1,4 @@
-streamlit>=1.30
+streamlit
 numpy
-Pillow
-opencv-python-headless==4.10.0.84
-reportlab
-matplotlib
+pillow
+opencv-python-headless
