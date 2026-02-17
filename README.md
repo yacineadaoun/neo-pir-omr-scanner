@@ -1,24 +1,13 @@
-# NEO PI-R OMR Scanner (Streamlit)
+# NEO PI-R — OMR Scanner & Scoring (Streamlit)
 
-## Features
-- Upload photo/scan
-- Auto rotation (0/90/180/270)
-- Document warp (perspective)
-- Robust table bbox detection (grid-lines + fallback)
-- Flexible grid (real line detection) + per-cell micro-alignment
-- Mark detection (FD/D/N/A/FA), ambiguity + multi-mark
-- Protocol validity rules + imputation
-- Raw scores (facets + domains)
-- Optional T-scores + percentiles via `norms.csv` (no proprietary data embedded)
-- Charts: bars + radar
-- Exports: CSV + TXT + PDF (professional)
+Application Streamlit qui :
+- redresse automatiquement une photo/scan de feuille de réponses NEO PI-R
+- détecte la grille 30×8 (240 items) et lit FD/D/N/A/FA
+- applique les règles de validité du protocole (blancs / trop de N / imputation)
+- calcule scores par facette (30) et par domaine (5)
+- génère exports (CSV, TXT) + profil graphique (PNG/PDF)
 
-## Deploy (Streamlit Cloud)
-- requirements.txt (opencv-python-headless)
-- packages.txt (libgl1, libglib2.0-0)
-- runtime.txt (python-3.11)
-
-## Norms
-Provide your own `norms.csv` using the template. The app will compute:
-T = 50 + 10*(raw-mean)/sd
-Percentile via normal CDF approximation.
+## Installation locale
+```bash
+pip install -r requirements.txt
+streamlit run neo_pir_scanner.py
