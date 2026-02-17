@@ -2,7 +2,7 @@ import io
 import os
 import csv
 from dataclasses import dataclass
-from typing import Dict, Tuple, List
+from typing import Dict, Tuple, List, Optional
 
 import streamlit as st
 import cv2
@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 
 
 # ============================================================
-# 0) PERSPECTIVE + ROTATION (sans imutils/scipy)
+# 0) OUTILS: perspective + rotation (sans imutils/scipy)
 # ============================================================
 def order_points(pts: np.ndarray) -> np.ndarray:
     rect = np.zeros((4, 2), dtype="float32")
@@ -69,7 +69,7 @@ def resize_keep_aspect(bgr: np.ndarray, target_width: int) -> np.ndarray:
 
 
 # ============================================================
-# 1) SCORING KEY depuis scoring_key.csv (pro)
+# 1) SCORING KEY depuis scoring_key.csv
 # ============================================================
 @st.cache_resource
 def load_scoring_key_from_csv(path: str = "scoring_key.csv") -> Dict[int, List[int]]:
@@ -160,7 +160,7 @@ def pil_to_bgr(pil_img: Image.Image) -> np.ndarray:
 
 def find_document_warp_auto_rotate(bgr: np.ndarray, target_width: int = 1800) -> Tuple[np.ndarray, int]:
     """
-    Essaie 0/90/180/270. Garde la rotation qui maximise l'aire du quadrilatère détecté.
+    Essaie rotations 0/90/180/270 et garde celle qui maximise l'aire du quadrilatère détecté.
     """
     best_area = -1.0
     best_warp = None
@@ -179,26 +179,28 @@ def find_document_warp_auto_rotate(bgr: np.ndarray, target_width: int = 1800) ->
             continue
 
         cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
-        doc = None
-        for c in cnts[:10]:
+        for c in cnts[:12]:
             peri = cv2.arcLength(c, True)
             approx = cv2.approxPolyDP(c, 0.02 * peri, True)
             if len(approx) == 4:
-                doc = approx.reshape(4, 2)
                 area = cv2.contourArea(approx)
                 if area > best_area:
                     best_area = area
-                    best_warp = four_point_transform(resized, doc)
+                    best_warp = four_point_transform(resized, approx.reshape(4, 2))
                     best_k = k
                 break
 
     if best_warp is None:
-        raise ValueError("Feuille non détectée (4 coins). Photo trop loin / trop floue / fond chargé.")
+        raise ValueError("Feuille non détectée (4 coins). Photo trop loin / floue / fond chargé.")
 
     return best_warp, best_k
 
 
-def binarize(bgr: np.ndarray) -> np.ndarray:
+def binarize_inv(bgr: np.ndarray) -> np.ndarray:
+    """
+    THRESH_BINARY_INV: imprimé noir + stylo -> blanc.
+    Sert à détecter la grille/print, pas à lire les réponses.
+    """
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (3, 3), 0)
     thr = cv2.adaptiveThreshold(
@@ -234,15 +236,14 @@ def find_table_bbox_soft(thr_inv: np.ndarray) -> Tuple[int, int, int, int]:
     H, W = thr_inv.shape[:2]
     if cnts:
         cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
-        for c in cnts[:6]:
+        for c in cnts[:8]:
             x, y, w, h = cv2.boundingRect(c)
-            area_ok = (w * h) > 0.20 * (W * H)
+            area_ok = (w * h) > 0.18 * (W * H)
             cx, cy = x + w / 2, y + h / 2
-            center_ok = (W * 0.20) < cx < (W * 0.80) and (H * 0.20) < cy < (H * 0.80)
+            center_ok = (W * 0.15) < cx < (W * 0.85) and (H * 0.15) < cy < (H * 0.88)
             if area_ok and center_ok:
                 return x, y, w, h
 
-    # fallback central
     fx = int(W * 0.05)
     fy = int(H * 0.12)
     fw = int(W * 0.90)
@@ -252,35 +253,6 @@ def find_table_bbox_soft(thr_inv: np.ndarray) -> Tuple[int, int, int, int]:
 
 def item_id_from_rc(r: int, c: int) -> int:
     return (r + 1) + 30 * c
-
-
-def option_rois_in_cell(cell: Tuple[int, int, int, int]) -> List[Tuple[int, int, int, int]]:
-    x1, y1, x2, y2 = cell
-    w = x2 - x1
-    h = y2 - y1
-
-    left = x1 + int(0.18 * w)
-    right = x2 - int(0.05 * w)
-    top = y1 + int(0.18 * h)
-    bottom = y2 - int(0.18 * h)
-
-    inner_w = max(1, right - left)
-    band_w = inner_w / 5.0
-
-    rois = []
-    for k in range(5):
-        rx1 = int(left + k * band_w + 0.10 * band_w)
-        rx2 = int(left + (k + 1) * band_w - 0.10 * band_w)
-        rois.append((rx1, top, rx2, bottom))
-    return rois
-
-
-def ink_score(thr_inv: np.ndarray, roi: Tuple[int, int, int, int]) -> float:
-    x1, y1, x2, y2 = roi
-    patch = thr_inv[y1:y2, x1:x2]
-    if patch.size == 0:
-        return 0.0
-    return (float(np.count_nonzero(patch)) / float(patch.size)) * 100.0
 
 
 def split_grid_uniform(table_bbox: Tuple[int, int, int, int], rows: int = 30, cols: int = 8):
@@ -298,7 +270,7 @@ def split_grid_uniform(table_bbox: Tuple[int, int, int, int], rows: int = 30, co
 
 def split_grid_micro_adjust(thr_inv: np.ndarray, table_bbox: Tuple[int, int, int, int], rows: int = 30, cols: int = 8):
     """
-    Micro-ajustement: essaie d'estimer les frontières via la grille.
+    Micro-ajustement: tente d'estimer les frontières via projection du masque de grille.
     Si insuffisant -> fallback uniforme.
     """
     x, y, w, h = table_bbox
@@ -328,8 +300,8 @@ def split_grid_micro_adjust(thr_inv: np.ndarray, table_bbox: Tuple[int, int, int
             peaks = [peaks[i] for i in keep]
         return peaks
 
-    vx = pick_peaks(proj_x, n_needed=9, min_dist=max(5, w // 50), thr=0.35)
-    hy = pick_peaks(proj_y, n_needed=31, min_dist=max(5, h // 80), thr=0.35)
+    vx = pick_peaks(proj_x, n_needed=9, min_dist=max(6, w // 60), thr=0.35)
+    hy = pick_peaks(proj_y, n_needed=31, min_dist=max(6, h // 90), thr=0.35)
 
     if len(vx) != 9 or len(hy) != 31:
         yield from split_grid_uniform(table_bbox, rows=rows, cols=cols)
@@ -347,32 +319,165 @@ def split_grid_micro_adjust(thr_inv: np.ndarray, table_bbox: Tuple[int, int, int
             yield r, c, (int(x1), int(y1), int(x2), int(y2))
 
 
-def read_responses_from_grid(
-    thr_inv: np.ndarray,
+# ============================================================
+# 5) MASQUES STYLO (BLEU + NOIR) + SUPPRESSION IMPRIMÉ
+# ============================================================
+def build_blue_mask(bgr: np.ndarray) -> np.ndarray:
+    hsv = cv2.cvtColor(bgr, cv2.COLOR_BGR2HSV)
+
+    # normalisation V (ombre)
+    h, s, v = cv2.split(hsv)
+    v = cv2.equalizeHist(v)
+    hsv = cv2.merge([h, s, v])
+
+    lower = np.array([85, 40, 40], dtype=np.uint8)
+    upper = np.array([145, 255, 255], dtype=np.uint8)
+    mask = cv2.inRange(hsv, lower, upper)
+
+    mask = cv2.medianBlur(mask, 3)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, k, iterations=1)
+    mask = cv2.dilate(mask, k, iterations=1)
+    return mask
+
+
+def build_black_pen_mask(bgr: np.ndarray, print_mask: np.ndarray) -> np.ndarray:
+    """
+    Détecte le stylo noir en limitant l'imprimé:
+      - candidat noir: pixels sombres + black-hat
+      - puis suppression de l'imprimé via print_mask (thr_inv de la feuille)
+    """
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+    # contraste local (black-hat)
+    k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+    blackhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, k)
+
+    # candidat = sombre OU blackhat fort
+    dark = cv2.inRange(gray, 0, 80)
+    bh = cv2.inRange(blackhat, 25, 255)
+
+    cand = cv2.bitwise_or(dark, bh)
+
+    # nettoyage
+    cand = cv2.medianBlur(cand, 3)
+    k2 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    cand = cv2.morphologyEx(cand, cv2.MORPH_OPEN, k2, iterations=1)
+
+    # suppression de l'imprimé: print_mask est 255 sur texte+grille+stylo
+    # on veut retirer au max texte+grille -> on dilate print_mask pour englober l'imprimé
+    pm = cv2.dilate(print_mask, cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3)), iterations=1)
+    pm_inv = cv2.bitwise_not(pm)
+
+    black_pen = cv2.bitwise_and(cand, pm_inv)
+
+    # petit boost final
+    black_pen = cv2.dilate(black_pen, k2, iterations=1)
+    return black_pen
+
+
+def build_pen_mask(bgr: np.ndarray, thr_inv_print: np.ndarray, detect_blue: bool, detect_black: bool) -> np.ndarray:
+    mask = np.zeros(bgr.shape[:2], dtype=np.uint8)
+
+    if detect_blue:
+        mask = cv2.bitwise_or(mask, build_blue_mask(bgr))
+
+    if detect_black:
+        mask = cv2.bitwise_or(mask, build_black_pen_mask(bgr, thr_inv_print))
+
+    return mask
+
+
+def ink_score_mask(mask: np.ndarray, roi: Tuple[int, int, int, int]) -> float:
+    x1, y1, x2, y2 = roi
+    patch = mask[y1:y2, x1:x2]
+    if patch.size == 0:
+        return 0.0
+    return (float(np.count_nonzero(patch)) / float(patch.size)) * 100.0
+
+
+# ============================================================
+# 6) ROIs INTELLIGENTES (entourage)
+# ============================================================
+def option_rois_in_cell(cell: Tuple[int, int, int, int]) -> List[Tuple[int, int, int, int]]:
+    """
+    ROIs "chirurgicales" centrées sur la lettre (zone d'entourage).
+    Réduit le bruit de l'imprimé.
+    """
+    x1, y1, x2, y2 = cell
+    w = x2 - x1
+    h = y2 - y1
+
+    left = x1 + int(0.22 * w)
+    right = x2 - int(0.06 * w)
+    top = y1 + int(0.20 * h)
+    bottom = y2 - int(0.20 * h)
+
+    inner_w = max(1, right - left)
+    band_w = inner_w / 5.0
+
+    rois = []
+    for k in range(5):
+        bx1 = left + k * band_w
+        bx2 = left + (k + 1) * band_w
+
+        rx1 = int(bx1 + 0.25 * band_w)
+        rx2 = int(bx2 - 0.25 * band_w)
+
+        ry1 = int(top + 0.12 * (bottom - top))
+        ry2 = int(bottom - 0.12 * (bottom - top))
+
+        rois.append((rx1, ry1, rx2, ry2))
+    return rois
+
+
+# ============================================================
+# 7) LECTURE SMART (masque stylo + seuil adaptatif + ambiguïté)
+# ============================================================
+def read_responses_from_grid_smart(
+    warped_bgr: np.ndarray,
+    thr_inv_print: np.ndarray,
     table_bbox: Tuple[int, int, int, int],
+    use_micro_adjust: bool,
     mark_threshold: float,
     ambiguity_gap: float,
-    use_micro_adjust: bool
-) -> Tuple[Dict[int, int], Dict[int, dict], np.ndarray]:
+    detect_blue: bool,
+    detect_black: bool
+):
+    """
+    Lecture robuste: on lit sur masque stylo (bleu/noir),
+    on évite l'imprimé via thr_inv_print, et on utilise un seuil adaptatif.
+    """
+    pen_mask = build_pen_mask(warped_bgr, thr_inv_print, detect_blue=detect_blue, detect_black=detect_black)
+    overlay = warped_bgr.copy()
 
-    overlay = cv2.cvtColor(thr_inv.copy(), cv2.COLOR_GRAY2BGR)
     responses: Dict[int, int] = {}
     meta: Dict[int, dict] = {}
 
-    splitter = split_grid_micro_adjust if use_micro_adjust else (lambda a, b, rows=30, cols=8: split_grid_uniform(b, rows, cols))
+    if use_micro_adjust:
+        iterator = split_grid_micro_adjust(thr_inv_print, table_bbox, rows=30, cols=8)
+    else:
+        iterator = split_grid_uniform(table_bbox, rows=30, cols=8)
 
-    for r, c, cell in splitter(thr_inv, table_bbox, rows=30, cols=8):
+    for r, c, cell in iterator:
         item_id = item_id_from_rc(r, c)
         rois = option_rois_in_cell(cell)
-        fills = [ink_score(thr_inv, roi) for roi in rois]
 
+        fills = [ink_score_mask(pen_mask, roi) for roi in rois]
         best_idx = int(np.argmax(fills))
-        best = fills[best_idx]
-        sorted_f = sorted(fills, reverse=True)
-        second = sorted_f[1] if len(sorted_f) > 1 else 0.0
+        best = float(fills[best_idx])
 
-        blank = best < mark_threshold
-        ambiguous = (best - second) < ambiguity_gap and not blank
+        sorted_f = sorted(fills, reverse=True)
+        second = float(sorted_f[1]) if len(sorted_f) > 1 else 0.0
+        gap = best - second
+
+        mean_f = float(np.mean(fills))
+        rel = best - mean_f
+
+        # blank: soit best trop petit, soit pas au-dessus du bruit local
+        blank = (best < mark_threshold) or (rel < 0.12)
+
+        ambiguous = (not blank) and (gap < ambiguity_gap)
 
         x1, y1, x2, y2 = cell
         cv2.rectangle(overlay, (x1, y1), (x2, y2), (60, 60, 60), 1)
@@ -394,16 +499,20 @@ def read_responses_from_grid(
         meta[item_id] = {
             "fills": fills,
             "chosen_idx": best_idx,
-            "chosen_fill": best,
+            "best": best,
+            "second": second,
+            "gap": gap,
+            "mean": mean_f,
+            "rel": rel,
             "blank": blank,
             "ambiguous": ambiguous
         }
 
-    return responses, meta, overlay
+    return responses, meta, overlay, pen_mask
 
 
 # ============================================================
-# 5) SCORING + PROTOCOLE
+# 8) SCORING + PROTOCOLE
 # ============================================================
 def compute_scores(responses: Dict[int, int]) -> Tuple[Dict[str, int], Dict[str, int]]:
     facette_scores = {fac: 0 for fac in facette_labels.keys()}
@@ -453,7 +562,7 @@ def apply_protocol_rules(responses: Dict[int, int], rules: ProtocolRules) -> Tup
 
 
 # ============================================================
-# 6) GRAPHIQUE PROFIL (Domaines + 30 facettes) + export
+# 9) GRAPHIQUE PROFIL + export
 # ============================================================
 def plot_profile(facette_scores: Dict[str, int], domain_scores: Dict[str, int]):
     x_labels = ["N", "E", "O", "A", "C"] + [
@@ -468,7 +577,6 @@ def plot_profile(facette_scores: Dict[str, int], domain_scores: Dict[str, int]):
 
     fig = plt.figure(figsize=(16, 5))
     ax = plt.gca()
-
     ax.plot(range(len(x_labels)), y, marker="o", linewidth=2)
     ax.set_xticks(range(len(x_labels)))
     ax.set_xticklabels(x_labels, rotation=60, ha="right")
@@ -487,20 +595,25 @@ def fig_to_bytes(fig, fmt: str) -> bytes:
 
 
 # ============================================================
-# 7) STREAMLIT UI
+# 10) STREAMLIT UI
 # ============================================================
 st.set_page_config(page_title="NEO PI-R Scanner", page_icon="🧾", layout="wide")
 
 st.title("NEO PI-R — Scanner & Calculateur (Feuille de réponses)")
-st.caption("Rotation auto • Redressement • Grille 30×8 • Micro-ajustement • Scoring • Exports • Profil graphique")
+st.caption("Rotation auto • Redressement • Grille 30×8 • Micro-ajustement • Lecture stylo (bleu + noir) • Scoring • Exports • Profil")
 
 RULES_DEFAULT = ProtocolRules()
 
 with st.sidebar:
     st.subheader("Lecture photo")
-    mark_threshold = st.slider("Seuil 'réponse détectée' (%)", 0.1, 10.0, 1.2, 0.1)
-    ambiguity_gap = st.slider("Seuil ambiguïté (écart %)", 0.5, 10.0, 2.0, 0.5)
+    mark_threshold = st.slider("Seuil réponse (encre %) — trait fin", 0.05, 5.0, 0.35, 0.05)
+    ambiguity_gap = st.slider("Seuil ambiguïté (best - second) %", 0.05, 5.0, 0.40, 0.05)
     use_micro = st.toggle("Micro-ajustement cellules (recommandé)", value=True)
+
+    st.markdown("---")
+    st.subheader("Stylo")
+    detect_blue = st.toggle("Détecter stylo BLEU", value=True)
+    detect_black = st.toggle("Détecter stylo NOIR (anti-imprimé)", value=True)
 
     st.markdown("---")
     st.subheader("Protocole")
@@ -526,15 +639,19 @@ if run and uploaded:
         bgr = pil_to_bgr(pil_img)
 
         warped, rot_k = find_document_warp_auto_rotate(bgr, target_width=1800)
-        thr = binarize(warped)
+        thr_inv_print = binarize_inv(warped)  # print + grille + stylo -> blanc
 
-        table_bbox = find_table_bbox_soft(thr)
+        table_bbox = find_table_bbox_soft(thr_inv_print)
 
-        raw_responses, meta, overlay = read_responses_from_grid(
-            thr, table_bbox,
-            mark_threshold=mark_threshold,
-            ambiguity_gap=ambiguity_gap,
-            use_micro_adjust=use_micro
+        raw_responses, meta, overlay, pen_mask = read_responses_from_grid_smart(
+            warped_bgr=warped,
+            thr_inv_print=thr_inv_print,
+            table_bbox=table_bbox,
+            use_micro_adjust=use_micro,
+            mark_threshold=float(mark_threshold),
+            ambiguity_gap=float(ambiguity_gap),
+            detect_blue=detect_blue,
+            detect_black=detect_black
         )
 
         final_responses, status = apply_protocol_rules(raw_responses, RULES)
@@ -567,15 +684,22 @@ if run and uploaded:
             with colA:
                 st.subheader(f"Image redressée (rotation={rot_k*90}°)")
                 st.image(cv2.cvtColor(warped, cv2.COLOR_BGR2RGB), use_container_width=True)
+                if debug:
+                    st.subheader("thr_inv_print (imprimé + grille)")
+                    st.image(thr_inv_print, use_container_width=True)
+
             with colB:
                 st.subheader("Overlay (vert=renseigné, rouge=vide, orange=ambigu)")
                 st.image(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB), use_container_width=True)
 
-            if debug:
-                st.write("table_bbox:", table_bbox)
-                amb = [i for i, m in meta.items() if (not m["blank"]) and m["ambiguous"]]
-                st.write("items ambigus:", len(amb))
-                st.write(amb[:40])
+                if debug:
+                    st.subheader("Masque stylo (bleu+noir) — debug")
+                    st.image(pen_mask, use_container_width=True)
+
+                    amb = [i for i, m in meta.items() if (not m["blank"]) and m["ambiguous"]]
+                    st.write("Items ambigus:", len(amb))
+                    st.write(amb[:40])
+                    st.write("table_bbox:", table_bbox)
 
         with tab2:
             data = []
@@ -585,26 +709,23 @@ if run and uploaded:
             st.dataframe(data, use_container_width=True, hide_index=True)
 
         with tab3:
-            dom_data = [{"Domaine": domain_labels[d], "Score": domain_scores[d]} for d in ["N","E","O","A","C"]]
+            dom_data = [{"Domaine": domain_labels[d], "Score": domain_scores[d]} for d in ["N", "E", "O", "A", "C"]]
             st.dataframe(dom_data, use_container_width=True, hide_index=True)
 
         with tab4:
-            st.subheader("Profil (style pro, scores bruts)")
+            st.subheader("Profil (scores bruts)")
             fig = plot_profile(facette_scores, domain_scores)
             st.pyplot(fig)
 
-            png_bytes = fig_to_bytes(fig, "png")
-            pdf_bytes = fig_to_bytes(fig, "pdf")
-
-            st.download_button("📥 Télécharger profil PNG", png_bytes, "neo_pir_profile.png", "image/png")
-            st.download_button("📥 Télécharger profil PDF", pdf_bytes, "neo_pir_profile.pdf", "application/pdf")
+            st.download_button("📥 Télécharger profil PNG", fig_to_bytes(fig, "png"), "neo_pir_profile.png", "image/png")
+            st.download_button("📥 Télécharger profil PDF", fig_to_bytes(fig, "pdf"), "neo_pir_profile.pdf", "application/pdf")
 
         with tab5:
-            # CSV
             out = io.StringIO()
             writer = csv.DictWriter(out, fieldnames=["Facette", "Items", "Score brut"])
             writer.writeheader()
             writer.writerows(data)
+
             out.write("\n--- TOTAUX PAR DOMAINE ---\n")
             dom_writer = csv.DictWriter(out, fieldnames=["Domaine", "Score"])
             dom_writer.writeheader()
@@ -612,7 +733,6 @@ if run and uploaded:
 
             st.download_button("📥 Télécharger CSV", out.getvalue(), "neo_pir_scores.csv", "text/csv")
 
-            # TXT
             report_lines = ["RAPPORT NEO PI-R", ""]
             report_lines.append(f"STATUT PROTOCOLE: {'VALIDE' if valid else 'INVALIDE'}")
             if status["reasons"]:
