@@ -1,33 +1,35 @@
-# app.py
-# NEO PI-R Scanner & Calculator - Version 1.0
+# neo_pir_scanner.py
+# NEO PI-R Scanner & Calculator - Version 1.0 (Final Cloud-Friendly)
 # Author: Yacine Adaoun
-# Streamlit + OpenCV + Psychometric scoring (Facets + Domains) + Protocol validity + Exports
+#
+# Streamlit + OpenCV (headless) + Psychometric scoring + Protocol validation
+# Robust table detection + Ambiguity + Multi-mark + Charts + PDF export
 
 from __future__ import annotations
 
 import io
 import csv
 from dataclasses import dataclass
-from typing import Dict, Tuple, List, Generator, Optional
+from typing import Dict, Tuple, List, Generator
 
 import numpy as np
 import cv2
-import imutils
-from imutils.perspective import four_point_transform
 from PIL import Image
 import streamlit as st
 
-# PDF export
+# Charts + PDF
+import matplotlib.pyplot as plt
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import cm
+from reportlab.lib.utils import ImageReader
 
 
 # ============================================================
 # 1) SCORING KEY (1..240)
 # ============================================================
-# IMPORTANT: Remplace/colle ici ta version complète si tu l'as déjà.
-# Je garde exactement ton style: item_id: [score_for_FD, score_for_D, score_for_N, score_for_A, score_for_FA]
+# IMPORTANT: colle ici TA clé complète si tu as une version plus large.
+# Format: item_id: [score_FD, score_D, score_N, score_A, score_FA]
 scoring_key: Dict[int, List[int]] = {
     1 : [4,3,2,1,0], 31 : [0,1,2,3,4], 61 : [4,3,2,1,0], 91 : [0,1,2,3,4], 121 : [4,3,2,1,0], 151 : [0,1,2,3,4], 181 : [4,3,2,1,0], 211 : [0,1,2,3,4],
     2 : [0,1,2,3,4], 32 : [4,3,2,1,0], 62 : [0,1,2,3,4], 92 : [4,3,2,1,0], 122 : [0,1,2,3,4], 152 : [4,3,2,1,0], 182 : [0,1,2,3,4], 212 : [4,3,2,1,0],
@@ -58,12 +60,12 @@ scoring_key: Dict[int, List[int]] = {
     27 : [4,3,2,1,0], 57 : [0,1,2,3,4], 87 : [4,3,2,1,0], 117 : [0,1,2,3,4], 147 : [4,3,2,1,0], 177 : [0,1,2,3,4], 207 : [4,3,2,1,0], 237 : [0,1,2,3,4],
     28 : [4,3,2,1,0], 58 : [0,1,2,3,4], 88 : [4,3,2,1,0], 118 : [0,1,2,3,4], 148 : [4,3,2,1,0], 178 : [0,1,2,3,4], 208 : [4,3,2,1,0], 238 : [0,1,2,3,4],
     29 : [0,1,2,3,4], 59 : [4,3,2,1,0], 89 : [0,1,2,3,4], 119 : [4,3,2,1,0], 149 : [0,1,2,3,4], 179 : [4,3,2,1,0], 209 : [0,1,2,3,4], 239 : [4,3,2,1,0],
-    30 : [4,3,2,1,0], 60 : [0,1,2,3,4], 90 : [4,3,2,1,0], 120 : [0,1,2,3,4], 150 : [4,3,2,1,0], 180 : [0,1,2,3,4], 210 : [4,3,2,1,0], 240 : [0,1,2,3,4]
+    30 : [4,3,2,1,0], 60 : [0,1,2,3,4], 90 : [4,3,2,1,0], 120 : [0,1,2,3,4], 150 : [4,3,2,1,0], 180 : [0,1,2,3,4], 210 : [4,3,2,1,0], 240 : [0,1,2,3,4],
 }
 
 
 # ============================================================
-# 2) ITEMS -> FACETS (generated, no 240 lines)
+# 2) ITEMS -> FACETS (generated)
 # ============================================================
 facet_bases = {
     "N1": [1], "N2": [6], "N3": [11], "N4": [16], "N5": [21], "N6": [26],
@@ -100,9 +102,7 @@ facet_labels = {
     "C4": "C4 - Effort pour réussir", "C5": "C5 - Autodiscipline", "C6": "C6 - Délibération",
 }
 
-domain_labels = {
-    "N": "Névrosisme", "E": "Extraversion", "O": "Ouverture", "A": "Agréabilité", "C": "Conscience"
-}
+domain_labels = {"N": "Névrosisme", "E": "Extraversion", "O": "Ouverture", "A": "Agréabilité", "C": "Conscience"}
 
 
 # ============================================================
@@ -110,15 +110,15 @@ domain_labels = {
 # ============================================================
 @dataclass
 class ProtocolRules:
-    max_blank_invalid: int = 15     # >= 15 blanks => invalid
-    max_N_invalid: int = 42         # >= 42 neutral => invalid
-    impute_blank_if_leq: int = 10   # <= 10 blanks: impute
-    impute_option_index: int = 2    # neutral index
-    impute_score_value: int = 2     # (informative)
+    max_blank_invalid: int = 15
+    max_N_invalid: int = 42
+    impute_blank_if_leq: int = 10
+    impute_option_index: int = 2  # N
+    impute_score_value: int = 2
 
 
 # ============================================================
-# 4) VISION UTILITIES
+# 4) VISION HELPERS (NO imutils)
 # ============================================================
 def pil_to_bgr(pil_img: Image.Image) -> np.ndarray:
     rgb = pil_img.convert("RGB")
@@ -126,29 +126,69 @@ def pil_to_bgr(pil_img: Image.Image) -> np.ndarray:
     return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
 
 
-def apply_clahe(gray: np.ndarray, clip_limit: float = 2.0, tile_grid_size: Tuple[int, int] = (8, 8)) -> np.ndarray:
+def resize_keep_ratio(bgr: np.ndarray, target_width: int) -> np.ndarray:
+    h, w = bgr.shape[:2]
+    if w == 0:
+        return bgr
+    new_h = int(h * (target_width / float(w)))
+    return cv2.resize(bgr, (target_width, new_h))
+
+
+def apply_clahe(gray: np.ndarray, clip_limit: float = 2.0, tile_grid_size=(8, 8)) -> np.ndarray:
     clahe = cv2.createCLAHE(clipLimit=clip_limit, tileGridSize=tile_grid_size)
     return clahe.apply(gray)
 
 
+def order_points(pts: np.ndarray) -> np.ndarray:
+    rect = np.zeros((4, 2), dtype="float32")
+    s = pts.sum(axis=1)
+    rect[0] = pts[np.argmin(s)]  # tl
+    rect[2] = pts[np.argmax(s)]  # br
+    diff = np.diff(pts, axis=1)
+    rect[1] = pts[np.argmin(diff)]  # tr
+    rect[3] = pts[np.argmax(diff)]  # bl
+    return rect
+
+
+def four_point_transform_cv(image: np.ndarray, pts: np.ndarray) -> np.ndarray:
+    rect = order_points(pts.astype("float32"))
+    (tl, tr, br, bl) = rect
+
+    widthA = np.linalg.norm(br - bl)
+    widthB = np.linalg.norm(tr - tl)
+    maxWidth = max(1, int(max(widthA, widthB)))
+
+    heightA = np.linalg.norm(tr - br)
+    heightB = np.linalg.norm(tl - bl)
+    maxHeight = max(1, int(max(heightA, heightB)))
+
+    dst = np.array([
+        [0, 0],
+        [maxWidth - 1, 0],
+        [maxWidth - 1, maxHeight - 1],
+        [0, maxHeight - 1]
+    ], dtype="float32")
+
+    M = cv2.getPerspectiveTransform(rect, dst)
+    return cv2.warpPerspective(image, M, (maxWidth, maxHeight))
+
+
 def find_document_warp(bgr: np.ndarray, target_width: int = 1800) -> np.ndarray:
-    # resize for stability
-    ratio = bgr.shape[1] / float(target_width)
-    resized = imutils.resize(bgr, width=target_width)
+    resized = resize_keep_ratio(bgr, target_width=target_width)
 
     gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
     gray = cv2.GaussianBlur(gray, (5, 5), 0)
     edged = cv2.Canny(gray, 50, 150)
 
-    cnts = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cnts = imutils.grab_contours(cnts)
+    cnts, _ = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not cnts:
-        raise ValueError("Impossible de détecter la feuille (aucun contour).")
+        # fallback: no contour => return resized
+        return resized
 
     cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
 
     doc = None
-    for c in cnts[:10]:
+    for c in cnts[:12]:
         peri = cv2.arcLength(c, True)
         approx = cv2.approxPolyDP(c, 0.02 * peri, True)
         if len(approx) == 4:
@@ -156,20 +196,15 @@ def find_document_warp(bgr: np.ndarray, target_width: int = 1800) -> np.ndarray:
             break
 
     if doc is None:
-        raise ValueError("Impossible de détecter un contour à 4 coins (feuille).")
+        # fallback: take bounding rect of biggest contour and warp from that rect (approx)
+        x, y, w, h = cv2.boundingRect(cnts[0])
+        pts = np.array([[x, y], [x + w, y], [x + w, y + h], [x, y + h]], dtype="float32")
+        return four_point_transform_cv(resized, pts)
 
-    warped = four_point_transform(resized, doc.reshape(4, 2))
-    # upscale back (optional): not needed because we already use target_width
-    return warped
+    return four_point_transform_cv(resized, doc.reshape(4, 2))
 
 
 def binarize_for_marks(bgr: np.ndarray, mode: str = "photo") -> np.ndarray:
-    """
-    Returns a binary inverted image (white marks on black background) as uint8.
-    mode:
-      - "photo": adaptive threshold, more robust to shadows
-      - "scan": Otsu threshold, usually cleaner
-    """
     gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
     gray = apply_clahe(gray, clip_limit=2.0, tile_grid_size=(8, 8))
     gray = cv2.GaussianBlur(gray, (3, 3), 0)
@@ -178,7 +213,7 @@ def binarize_for_marks(bgr: np.ndarray, mode: str = "photo") -> np.ndarray:
         _, thr = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         return thr
 
-    # photo
+    # photo: adaptive threshold
     thr = cv2.adaptiveThreshold(
         gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
         cv2.THRESH_BINARY_INV, 31, 7
@@ -186,32 +221,59 @@ def binarize_for_marks(bgr: np.ndarray, mode: str = "photo") -> np.ndarray:
     return thr
 
 
-def find_table_bbox(thr_inv: np.ndarray) -> Tuple[int, int, int, int]:
+def find_table_bbox_robust(
+    thr_inv: np.ndarray,
+    min_w_ratio: float = 0.45,
+    min_h_ratio: float = 0.30,
+    kernel_div: int = 18,
+    dilate_size: int = 5
+) -> Tuple[int, int, int, int]:
     """
-    Detect the main grid area by extracting horizontal & vertical lines.
-    Returns (x, y, w, h).
+    Robust bbox detection:
+    1) Try grid lines (horizontal + vertical).
+    2) Fallback: largest contours on thr_inv.
+    3) Final fallback: return largest contour bbox without raising.
     """
-    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (max(10, thr_inv.shape[1] // 18), 1))
-    hor = cv2.morphologyEx(thr_inv, cv2.MORPH_OPEN, h_kernel, iterations=1)
+    H, W = thr_inv.shape[:2]
 
-    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(10, thr_inv.shape[0] // 18)))
+    def ok_bbox(w: int, h: int) -> bool:
+        return (w >= W * min_w_ratio) and (h >= H * min_h_ratio)
+
+    # ---- Method 1: detect grid lines
+    hk = max(10, W // max(10, kernel_div))
+    vk = max(10, H // max(10, kernel_div))
+
+    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (hk, 1))
+    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, vk))
+
+    hor = cv2.morphologyEx(thr_inv, cv2.MORPH_OPEN, h_kernel, iterations=1)
     ver = cv2.morphologyEx(thr_inv, cv2.MORPH_OPEN, v_kernel, iterations=1)
 
     grid = cv2.bitwise_or(hor, ver)
-    grid = cv2.dilate(grid, cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5)), iterations=1)
+    grid = cv2.dilate(grid, cv2.getStructuringElement(cv2.MORPH_RECT, (dilate_size, dilate_size)), iterations=1)
 
-    cnts = cv2.findContours(grid.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    cnts = imutils.grab_contours(cnts)
-    if not cnts:
-        raise ValueError("Éléments du tableau introuvables (lignes non détectées).")
+    cnts, _ = cv2.findContours(grid.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if cnts:
+        cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
+        x, y, w, h = cv2.boundingRect(cnts[0])
+        if ok_bbox(w, h):
+            return x, y, w, h
 
-    cnts = sorted(cnts, key=cv2.contourArea, reverse=True)
-    x, y, w, h = cv2.boundingRect(cnts[0])
+    # ---- Method 2: fallback contours on thr_inv
+    cnts2, _ = cv2.findContours(thr_inv.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts2:
+        # If nothing, return full image
+        return 0, 0, W, H
 
-    # sanity check
-    if w < thr_inv.shape[1] * 0.60 or h < thr_inv.shape[0] * 0.40:
-        raise ValueError("BBox du tableau incohérente (angle/zoom trop fort).")
+    cnts2 = sorted(cnts2, key=cv2.contourArea, reverse=True)
 
+    for c in cnts2[:20]:
+        x, y, w, h = cv2.boundingRect(c)
+        if ok_bbox(w, h):
+            return x, y, w, h
+
+    # Final fallback: return bbox of largest contour
+    x, y, w, h = cv2.boundingRect(cnts2[0])
     return x, y, w, h
 
 
@@ -229,21 +291,15 @@ def split_grid(table_bbox: Tuple[int, int, int, int], rows: int = 30, cols: int 
 
 
 def item_id_from_rc(r: int, c: int) -> int:
-    # column 0 => items 1..30, col 1 => 31..60, ... col 7 => 211..240
     return (r + 1) + 30 * c
 
 
 def option_rois_in_cell(cell: Tuple[int, int, int, int]) -> List[Tuple[int, int, int, int]]:
-    """
-    In each cell: 5 option zones (FD, D, N, A, FA).
-    We cut the interior area in 5 vertical stripes, excluding borders and the item number area.
-    """
     x1, y1, x2, y2 = cell
     w = x2 - x1
     h = y2 - y1
 
-    # margins to avoid borders + left item number
-    left = x1 + int(0.18 * w)
+    left = x1 + int(0.18 * w)   # skip item number area
     right = x2 - int(0.05 * w)
     top = y1 + int(0.18 * h)
     bottom = y2 - int(0.18 * h)
@@ -274,16 +330,9 @@ def read_grid_responses(
     table_bbox: Tuple[int, int, int, int],
     mark_threshold: float,
     ambiguity_gap: float,
-    multi_mark_extra_gap: float = 0.3
+    multi_mark_extra_gap: float
 ) -> Tuple[Dict[int, int], Dict[int, dict], np.ndarray]:
-    """
-    Returns:
-      responses[item_id] = option_index (0..4) or -1 if blank
-      meta[item_id] with fills + flags
-      overlay BGR for visual QA
-    """
     overlay = cv2.cvtColor(thr_inv.copy(), cv2.COLOR_GRAY2BGR)
-
     responses: Dict[int, int] = {}
     meta: Dict[int, dict] = {}
 
@@ -294,36 +343,31 @@ def read_grid_responses(
 
         best_idx = int(np.argmax(fills))
         best_fill = float(fills[best_idx])
-
         sorted_f = sorted(fills, reverse=True)
         second_fill = float(sorted_f[1]) if len(sorted_f) > 1 else 0.0
 
         blank = best_fill < mark_threshold
         ambiguous = (not blank) and ((best_fill - second_fill) < ambiguity_gap)
 
-        # multi-mark: if at least 2 zones clearly above threshold
         above = [i for i, v in enumerate(fills) if v >= (mark_threshold + multi_mark_extra_gap)]
         multi_mark = (not blank) and (len(above) >= 2)
 
         x1, y1, x2, y2 = cell
-
-        # base border
         cv2.rectangle(overlay, (x1, y1), (x2, y2), (70, 70, 70), 1)
 
         if blank:
             responses[item_id] = -1
-            cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 0, 255), 2)  # red
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 0, 255), 2)
         else:
             responses[item_id] = best_idx
-            cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 0), 2)  # green
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
         if ambiguous or multi_mark:
-            cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 165, 255), 2)  # orange
+            cv2.rectangle(overlay, (x1, y1), (x2, y2), (0, 165, 255), 2)
 
-        # chosen option
-        rx1, ry1, rx2, ry2 = rois[best_idx]
         if not blank:
-            cv2.rectangle(overlay, (rx1, ry1), (rx2, ry2), (255, 0, 0), 2)  # blue
+            rx1, ry1, rx2, ry2 = rois[best_idx]
+            cv2.rectangle(overlay, (rx1, ry1), (rx2, ry2), (255, 0, 0), 2)
 
         meta[item_id] = {
             "fills": fills,
@@ -361,9 +405,7 @@ def compute_scores(responses: Dict[int, int]) -> Tuple[Dict[str, int], Dict[str,
 def apply_protocol_rules(responses: Dict[int, int], rules: ProtocolRules) -> Tuple[Dict[int, int], dict]:
     blanks = [i for i, v in responses.items() if v == -1]
     n_blank = len(blanks)
-
-    # "N" response = index 2
-    n_count = sum(1 for v in responses.values() if v == 2)
+    n_count = sum(1 for v in responses.values() if v == 2)  # index 2 = N
 
     status = {
         "valid": True,
@@ -376,18 +418,13 @@ def apply_protocol_rules(responses: Dict[int, int], rules: ProtocolRules) -> Tup
 
     if n_blank >= rules.max_blank_invalid:
         status["valid"] = False
-        status["reasons"].append(
-            f"Trop d'items vides : {n_blank} (>= {rules.max_blank_invalid})"
-        )
+        status["reasons"].append(f"Trop d'items vides : {n_blank} (>= {rules.max_blank_invalid})")
 
     if n_count >= rules.max_N_invalid:
         status["valid"] = False
-        status["reasons"].append(
-            f"Trop de réponses 'N' : {n_count} (>= {rules.max_N_invalid})"
-        )
+        status["reasons"].append(f"Trop de réponses 'N' : {n_count} (>= {rules.max_N_invalid})")
 
     new_resp = dict(responses)
-
     if status["valid"] and 0 < n_blank <= rules.impute_blank_if_leq:
         for item_id in blanks:
             new_resp[item_id] = rules.impute_option_index
@@ -397,21 +434,20 @@ def apply_protocol_rules(responses: Dict[int, int], rules: ProtocolRules) -> Tup
 
 
 # ============================================================
-# 6) EXPORTS
+# 6) EXPORTS + CHARTS
 # ============================================================
 def build_csv(facet_scores: Dict[str, int], domain_scores: Dict[str, int]) -> str:
-    output = io.StringIO()
-    writer = csv.writer(output)
-    writer.writerow(["Facette", "Score brut"])
-    for fac in sorted(facet_scores.keys()):
-        writer.writerow([facet_labels[fac], facet_scores[fac]])
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["Facette", "Score brut"])
+    for fac in sorted(facet_scores.keys(), key=lambda x: (x[0], int(x[1]))):
+        w.writerow([facet_labels[fac], facet_scores[fac]])
 
-    writer.writerow([])
-    writer.writerow(["Domaine", "Score brut"])
-    for d in sorted(domain_scores.keys()):
-        writer.writerow([domain_labels[d], domain_scores[d]])
-
-    return output.getvalue()
+    w.writerow([])
+    w.writerow(["Domaine", "Score brut"])
+    for d in ["N", "E", "O", "A", "C"]:
+        w.writerow([domain_labels[d], domain_scores[d]])
+    return out.getvalue()
 
 
 def build_report_txt(status: dict, facet_scores: Dict[str, int], domain_scores: Dict[str, int]) -> str:
@@ -427,107 +463,150 @@ def build_report_txt(status: dict, facet_scores: Dict[str, int], domain_scores: 
 
     lines.append("")
     lines.append(f"Items vides : {status['n_blank']}")
-    lines.append(f"Réponses 'N' observées (index=2) : {status['n_count']}")
+    lines.append(f"Réponses 'N' (index=2) : {status['n_count']}")
     lines.append(f"Imputations : {status['imputed']}")
     lines.append("")
-    lines.append("SCORES PAR FACETTE")
-    for fac in sorted(facet_scores.keys()):
-        lines.append(f"{facet_labels[fac]}: {facet_scores[fac]}")
-    lines.append("")
     lines.append("TOTAUX PAR DOMAINE")
-    for d in sorted(domain_scores.keys()):
-        lines.append(f"{domain_labels[d]}: {domain_scores[d]}")
+    for d in ["N", "E", "O", "A", "C"]:
+        lines.append(f"{domain_labels[d]} : {domain_scores[d]}")
+    lines.append("")
+    lines.append("SCORES PAR FACETTE")
+    for fac in sorted(facet_scores.keys(), key=lambda x: (x[0], int(x[1]))):
+        lines.append(f"{facet_labels[fac]} : {facet_scores[fac]}")
     lines.append("")
     return "\n".join(lines)
 
 
-def build_report_pdf(
-    status: dict,
-    facet_scores: Dict[str, int],
-    domain_scores: Dict[str, int],
-    title: str = "Rapport NEO PI-R"
-) -> bytes:
+def plot_domains(domain_scores: dict) -> bytes:
+    domains = ["N", "E", "O", "A", "C"]
+    labels = [domain_labels[d] for d in domains]
+    values = [domain_scores[d] for d in domains]
+
+    fig = plt.figure(figsize=(8, 3.2))
+    plt.bar(labels, values)
+    plt.xticks(rotation=20, ha="right")
+    plt.title("Scores par domaine (bruts)")
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=160)
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def plot_facets(facet_scores: dict) -> bytes:
+    facets = sorted(facet_scores.keys(), key=lambda x: (x[0], int(x[1])))
+    values = [facet_scores[f] for f in facets]
+    labels = facets  # N1..C6
+
+    fig = plt.figure(figsize=(10, 4.2))
+    plt.bar(labels, values)
+    plt.title("Scores par facette (bruts)")
+    plt.tight_layout()
+
+    buf = io.BytesIO()
+    fig.savefig(buf, format="png", dpi=160)
+    plt.close(fig)
+    return buf.getvalue()
+
+
+def build_report_pdf_with_charts(status: dict, facet_scores: Dict[str, int], domain_scores: Dict[str, int]) -> bytes:
     buf = io.BytesIO()
     c = canvas.Canvas(buf, pagesize=A4)
     w, h = A4
 
-    def write_line(text: str, x: float, y: float, size: int = 11, bold: bool = False):
-        c.setFont("Helvetica-Bold" if bold else "Helvetica", size)
-        c.drawString(x, y, text)
-
+    # Page 1
     y = h - 2.0 * cm
-    write_line(title, 2.0 * cm, y, size=16, bold=True)
+    c.setFont("Helvetica-Bold", 16)
+    c.drawString(2.0 * cm, y, "Rapport NEO PI-R")
     y -= 1.0 * cm
 
-    write_line(f"Statut protocole : {'VALIDE' if status['valid'] else 'INVALIDE'}", 2.0 * cm, y, bold=True)
+    c.setFont("Helvetica-Bold", 12)
+    c.drawString(2.0 * cm, y, f"Statut protocole : {'VALIDE' if status['valid'] else 'INVALIDE'}")
     y -= 0.7 * cm
 
-    write_line(f"Items vides : {status['n_blank']}", 2.0 * cm, y)
+    c.setFont("Helvetica", 11)
+    c.drawString(2.0 * cm, y, f"Items vides : {status['n_blank']}")
     y -= 0.5 * cm
-    write_line(f"Réponses 'N' (index=2) : {status['n_count']}", 2.0 * cm, y)
+    c.drawString(2.0 * cm, y, f"Réponses 'N' (index=2) : {status['n_count']}")
     y -= 0.5 * cm
-    write_line(f"Imputations : {status['imputed']}", 2.0 * cm, y)
-    y -= 0.8 * cm
+    c.drawString(2.0 * cm, y, f"Imputations : {status['imputed']}")
+    y -= 0.6 * cm
 
     if status["reasons"]:
-        write_line("Raisons:", 2.0 * cm, y, bold=True)
+        c.setFont("Helvetica-Bold", 11)
+        c.drawString(2.0 * cm, y, "Raisons :")
         y -= 0.6 * cm
+        c.setFont("Helvetica", 10)
         for r in status["reasons"]:
-            write_line(f"- {r}", 2.2 * cm, y)
-            y -= 0.5 * cm
-        y -= 0.3 * cm
+            c.drawString(2.2 * cm, y, f"- {r[:120]}")
+            y -= 0.45 * cm
 
-    # Domain scores
-    write_line("Totaux par domaine", 2.0 * cm, y, bold=True)
-    y -= 0.7 * cm
-    for d in sorted(domain_scores.keys()):
-        write_line(f"{domain_labels[d]} : {domain_scores[d]}", 2.2 * cm, y)
-        y -= 0.5 * cm
+    # Domain chart
+    domain_png = plot_domains(domain_scores)
+    img = ImageReader(io.BytesIO(domain_png))
+    c.drawImage(img, 2.0 * cm, 7.0 * cm, width=17.0 * cm, height=6.0 * cm, preserveAspectRatio=True, anchor="sw")
 
+    c.showPage()
+
+    # Page 2: facets chart
+    c.setFont("Helvetica-Bold", 14)
+    c.drawString(2.0 * cm, h - 2.0 * cm, "Scores par facette (bruts)")
+    facet_png = plot_facets(facet_scores)
+    img2 = ImageReader(io.BytesIO(facet_png))
+    c.drawImage(img2, 1.5 * cm, 6.0 * cm, width=18.0 * cm, height=10.0 * cm, preserveAspectRatio=True, anchor="sw")
+
+    c.showPage()
+
+    # Page 3+: facet list
+    y = h - 2.0 * cm
+    c.setFont("Helvetica-Bold", 13)
+    c.drawString(2.0 * cm, y, "Tableau des facettes (scores bruts)")
     y -= 0.8 * cm
-    if y < 6 * cm:
-        c.showPage()
-        y = h - 2.0 * cm
 
-    # Facet scores (may span pages)
-    write_line("Scores par facette", 2.0 * cm, y, bold=True)
-    y -= 0.7 * cm
-
-    for fac in sorted(facet_scores.keys()):
-        write_line(f"{facet_labels[fac]} : {facet_scores[fac]}", 2.2 * cm, y)
-        y -= 0.45 * cm
+    c.setFont("Helvetica", 10)
+    for fac in sorted(facet_scores.keys(), key=lambda x: (x[0], int(x[1]))):
+        c.drawString(2.0 * cm, y, f"{facet_labels[fac]} : {facet_scores[fac]}")
+        y -= 0.4 * cm
         if y < 2.0 * cm:
             c.showPage()
             y = h - 2.0 * cm
+            c.setFont("Helvetica", 10)
 
     c.save()
     return buf.getvalue()
 
 
 # ============================================================
-# 7) STREAMLIT APP
+# 7) STREAMLIT UI
 # ============================================================
 st.set_page_config(page_title="Scanner NEO PI-R", page_icon="🧠", layout="wide")
-
 st.title("NEO PI-R – Scanner & Calculateur (Feuille de réponses)")
-st.caption("Lecture par grille 30×8 – support stylo bleu/noir – validation protocolaire – exports CSV/TXT/PDF")
+st.caption("Lecture 30×8 (240 items) • Stylo bleu/noir • Robust BBox • Graphiques • Exports CSV/TXT/PDF")
 
 with st.sidebar:
-    st.subheader("Mode & Paramètres vision")
-    mode = st.selectbox("Mode d'image", ["photo", "scan"], index=0, help="Photo = robuste aux ombres. Scan = plus strict/clean.")
+    st.subheader("Mode image")
+    mode = st.selectbox("Type d'image", ["photo", "scan"], index=0)
+
+    st.subheader("Warp / Prétraitement")
     target_width = st.slider("Largeur cible (warp)", 1200, 2600, 1800, 100)
 
+    st.subheader("Détection réponses")
     mark_threshold = st.slider("Seuil 'réponse détectée' (%)", 0.1, 20.0, 1.2, 0.1)
-    ambiguity_gap = st.slider("Seuil ambiguïté (écart % entre 1er et 2e)", 0.1, 15.0, 2.0, 0.1)
-    multi_mark_extra_gap = st.slider("Multi-cochage: marge extra au-dessus du seuil (%)", 0.0, 3.0, 0.3, 0.1)
+    ambiguity_gap = st.slider("Seuil ambiguïté (écart %)", 0.1, 15.0, 2.0, 0.1)
+    multi_mark_extra_gap = st.slider("Multi-cochage: marge extra (%)", 0.0, 3.0, 0.3, 0.1)
 
-    st.markdown("---")
+    st.subheader("Détection tableau (BBox)")
+    min_w_ratio = st.slider("BBox: largeur minimale (% image)", 0.20, 0.95, 0.45, 0.05)
+    min_h_ratio = st.slider("BBox: hauteur minimale (% image)", 0.15, 0.95, 0.30, 0.05)
+    kernel_div = st.slider("Sensibilité lignes (kernel_div)", 10, 40, 18, 1)
+    dilate_size = st.slider("Dilatation grille (px)", 1, 9, 5, 1)
+
     st.subheader("Règles protocole")
-    max_blank_invalid = st.number_input("Items vides ⇒ invalide si ≥", min_value=0, max_value=240, value=15, step=1)
-    max_N_invalid = st.number_input("Réponses 'N' ⇒ invalide si ≥", min_value=0, max_value=240, value=42, step=1)
-    impute_blank_if_leq = st.number_input("Imputation si blancs ≤", min_value=0, max_value=240, value=10, step=1)
+    max_blank_invalid = st.number_input("Items vides ⇒ invalide si ≥", 0, 240, 15, 1)
+    max_N_invalid = st.number_input("Réponses 'N' ⇒ invalide si ≥", 0, 240, 42, 1)
+    impute_blank_if_leq = st.number_input("Imputation si blancs ≤", 0, 240, 10, 1)
 
-    st.caption("Imputation = choisir 'N' (index 2, score 2) sur chaque item vide.")
     debug = st.toggle("Debug", value=False)
 
 RULES = ProtocolRules(
@@ -538,7 +617,7 @@ RULES = ProtocolRules(
     impute_score_value=2
 )
 
-uploaded = st.file_uploader("Importer une photo/scanner de la feuille (JPG/PNG)", type=["jpg", "jpeg", "png"])
+uploaded = st.file_uploader("Importer une photo/scanner (JPG/PNG)", type=["jpg", "jpeg", "png"])
 run_btn = st.button("Scanner & Calculer", type="primary", disabled=(uploaded is None))
 
 if run_btn and uploaded is not None:
@@ -549,39 +628,38 @@ if run_btn and uploaded is not None:
         warped = find_document_warp(bgr, target_width=target_width)
         thr = binarize_for_marks(warped, mode=mode)
 
-        table_bbox = find_table_bbox(thr)
+        table_bbox = find_table_bbox_robust(
+            thr,
+            min_w_ratio=float(min_w_ratio),
+            min_h_ratio=float(min_h_ratio),
+            kernel_div=int(kernel_div),
+            dilate_size=int(dilate_size),
+        )
 
         raw_resp, meta, overlay = read_grid_responses(
             thr, table_bbox,
-            mark_threshold=mark_threshold,
-            ambiguity_gap=ambiguity_gap,
-            multi_mark_extra_gap=multi_mark_extra_gap
+            mark_threshold=float(mark_threshold),
+            ambiguity_gap=float(ambiguity_gap),
+            multi_mark_extra_gap=float(multi_mark_extra_gap),
         )
 
         final_resp, status = apply_protocol_rules(raw_resp, RULES)
         facet_scores, domain_scores = compute_scores(final_resp)
 
-        n_items = 240
-        n_blank = status["n_blank"]
-        n_count = status["n_count"]
-        imputed = status["imputed"]
-        valid = status["valid"]
-
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Items vides", n_blank)
-        c2.metric("N observés (idx=2)", n_count)
-        c3.metric("Imputations", imputed)
-        c4.metric("Statut protocole", "VALIDE" if valid else "INVALIDE")
+        c1.metric("Items vides", status["n_blank"])
+        c2.metric("N observés (idx=2)", status["n_count"])
+        c3.metric("Imputations", status["imputed"])
+        c4.metric("Statut", "VALIDE" if status["valid"] else "INVALIDE")
 
-        if not valid:
+        if not status["valid"]:
             st.error("Protocole INVALIDE")
             for r in status["reasons"]:
                 st.write("•", r)
         else:
             st.success("Protocole VALIDE")
 
-        # Tabs
-        tab1, tab2, tab3, tab4 = st.tabs(["Overlay contrôle", "Scores facettes", "Scores domaines", "Exports"])
+        tab1, tab2, tab3, tab4 = st.tabs(["Overlay contrôle", "Facettes", "Domaines", "Exports"])
 
         with tab1:
             colA, colB = st.columns(2)
@@ -593,31 +671,45 @@ if run_btn and uploaded is not None:
                 st.image(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB), use_container_width=True)
 
             if debug:
-                st.write("Table bbox:", table_bbox)
+                x, y, w, h = table_bbox
+                dbg = cv2.cvtColor(thr.copy(), cv2.COLOR_GRAY2BGR)
+                cv2.rectangle(dbg, (x, y), (x + w, y + h), (0, 255, 0), 3)
+                st.subheader("Debug: Threshold + BBox")
+                st.image(cv2.cvtColor(dbg, cv2.COLOR_BGR2RGB), use_container_width=True)
+
                 amb = [i for i, m in meta.items() if (not m["blank"]) and (m["ambiguous"] or m["multi_mark"])]
-                st.write("Éléments ambigus ou multi-cochés :", len(amb))
+                st.write("Ambigus/multi:", len(amb))
                 st.write("Exemples:", amb[:40])
 
         with tab2:
             st.subheader("Scores par facette (bruts)")
-            rows = [{"Facette": facet_labels[f], "Score brut": facet_scores[f]} for f in sorted(facet_scores.keys())]
+            rows = [{"Facette": facet_labels[f], "Score brut": facet_scores[f]} for f in sorted(facet_scores.keys(), key=lambda x: (x[0], int(x[1])))]
             st.dataframe(rows, use_container_width=True, hide_index=True)
+
+            st.subheader("Graphique facettes")
+            facet_png = plot_facets(facet_scores)
+            st.image(facet_png, use_container_width=True)
 
         with tab3:
             st.subheader("Totaux par domaine (bruts)")
-            drows = [{"Domaine": domain_labels[d], "Score brut": domain_scores[d]} for d in sorted(domain_scores.keys())]
+            drows = [{"Domaine": domain_labels[d], "Score brut": domain_scores[d]} for d in ["N", "E", "O", "A", "C"]]
             st.dataframe(drows, use_container_width=True, hide_index=True)
+
+            st.subheader("Graphique domaines")
+            domain_png = plot_domains(domain_scores)
+            st.image(domain_png, use_container_width=True)
 
         with tab4:
             st.subheader("Exports")
-
             csv_text = build_csv(facet_scores, domain_scores)
             report_txt = build_report_txt(status, facet_scores, domain_scores)
-            report_pdf = build_report_pdf(status, facet_scores, domain_scores)
+            report_pdf = build_report_pdf_with_charts(status, facet_scores, domain_scores)
 
             st.download_button("📥 Télécharger CSV", csv_text, "neo_pir_scores.csv", "text/csv")
             st.download_button("📥 Télécharger Rapport TXT", report_txt, "neo_pir_report.txt", "text/plain")
-            st.download_button("📥 Télécharger Rapport PDF", report_pdf, "neo_pir_report.pdf", "application/pdf")
+            st.download_button("📥 Télécharger Rapport PDF (avec graphiques)", report_pdf, "neo_pir_report.pdf", "application/pdf")
 
     except Exception as e:
         st.error(f"Erreur : {e}")
+        if debug:
+            st.exception(e)
