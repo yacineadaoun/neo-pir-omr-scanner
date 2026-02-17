@@ -366,7 +366,7 @@ RULES = ProtocolRules(
 
 uploaded = st.file_uploader("Importer une photo/scanner de la feuille (JPG/PNG)", type=["jpg","jpeg","png"])
 
-run = st.button("🧠 Scanner & Calculer", type="primary", disabled=(uploaded is None))
+run = st.button("Scanner & Calculer", type="primary", disabled=(uploaded is None))
 
 if run and uploaded:
     try:
