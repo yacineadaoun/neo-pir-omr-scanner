@@ -2,5 +2,5 @@ streamlit>=1.30
 numpy
 imutils
 Pillow
-opencv-python-headless
+opencv-python-headless==4.10.0.84
 reportlab
